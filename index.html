@@ -35,6 +35,27 @@ const slot=id=>SLOTS.find(s=>s.id===id),locationName=id=>CONFIG.areas[slot(id).a
 // 配置・作業はSDKのメモリーキャッシュのみ。端末固有設定だけ永続化。
 function prefGet(k){try{return localStorage.getItem(PREF+k)||'';}catch{return '';}}
 function prefSet(k,v){try{if(v)localStorage.setItem(PREF+k,v);else localStorage.removeItem(PREF+k);}catch{$('access-error').textContent='ブラウザに設定を保存できません。このページ内だけで使用します。';}}
+// 表示の選択だけ保存。既定は従来のエリア別（PCでは従来の全エリア）。
+let overview=prefGet('view')==='overview';
+function fitOverview(){
+  const map=$('map'),frame=$('map-frame');
+  if(!overview){map.style.transform='';frame.style.height='';return;}
+  // layout幅を使う。visualViewport.widthではピンチ中に再縮小されてしまう。
+  const scale=Math.min(1,frame.clientWidth/1400);
+  map.style.transform='scale('+scale+')';
+  frame.style.height=Math.ceil(map.offsetHeight*scale)+'px';
+}
+function applyView(){
+  document.body.classList.toggle('overview',overview);
+  $('view-overview').setAttribute('aria-pressed',String(overview));
+  $('view-areas').setAttribute('aria-pressed',String(!overview));
+}
+function setView(value){closeAll();clearTimeout(timer);overview=value;prefSet('view',value?'overview':'areas');applyView();render();}
+$('view-overview').onclick=()=>setView(true);
+$('view-areas').onclick=()=>setView(false);
+window.addEventListener('resize',fitOverview);
+new ResizeObserver(fitOverview).observe($('map-frame'));
+applyView();
 const deviceId=prefGet('id')||crypto.randomUUID();prefSet('id',deviceId);
 let deviceName=prefGet('name'), accessKey=prefGet('key'), db=null, root=null;
 let unsubscribers=[], generation=0, ready=false, connected=false, offset=0, offsetReady=false, pendingWrites=0, operation=0;
@@ -80,6 +101,7 @@ function connect(){
   }catch(e){stopSession();gate('接続設定を確認してください：'+e.message);}
 }
 function sendPatch(label,patch,before,{undo=false}={}){
+  if(overview)return;
   if(!root||!ready){$('save-status').textContent='データの初回読み込み完了後に操作してください';return;}
   const target=root, gen=generation, op=++operation;
   const previousUndo=state.undo;
@@ -93,6 +115,7 @@ function sendPatch(label,patch,before,{undo=false}={}){
   }).catch(e=>{if(gen===generation){if(operation===op)state.undo=previousUndo;permissionError(e);if(!/permission.?denied/i.test(e.code||e.message||''))$('save-status').textContent='送信失敗：'+e.message;}}).finally(()=>{pendingWrites--;render();});
 }
 function commit(label,fn){
+  if(overview)return;
   if(!root||!ready){$('save-status').textContent='データの初回読み込み完了後に操作してください';return;}
   const before={placements:clone(state.placements),work:clone(state.work)};
   fn();const after={placements:clone(state.placements),work:clone(state.work)};
@@ -115,8 +138,8 @@ $('change-key').onclick=()=>{if(pendingWrites){$('save-status').textContent='送
 $('rename').onclick=()=>{const n=prompt('端末名（40文字以内）',deviceName);if(n&&n.trim()){deviceName=n.trim().slice(0,40);prefSet('name',deviceName);$('device-label').textContent='端末：'+deviceName;}};
 function classify(p){const v=VEHICLES.find(v=>v.reg===p.reg),r=RESERVATIONS.find(r=>r.reg===p.reg);if(!r)return {kind:'unknown',v,r,soon:false};const mins=t=>{const [h,m]=t.split(':').map(Number);return h*60+m;};const delta=mins(r.time)-mins(state.clock);return {kind:r.day,v,r,soon:r.day==='today'&&r.status==='予約'&&delta>=0&&delta<=CONFIG.soonMinutes};}
 function collision(p){return Object.values(state.placements).some(q=>q!==p&&q.digits===p.digits&&p.reg&&q.reg&&q.reg!==p.reg);}
-function tile(s){const p=state.placements[s.id],plan=state.plans[s.id]||'—';let inside='<span class="empty">＋ 4桁入力</span>',cls='tile';if(p){const x=classify(p);cls+=' '+x.kind+(x.soon?' soon':'')+(collision(p)?' collision':'');inside='<span class="identity"><b class="tag '+x.kind+'">'+CONFIG[x.kind].label+'</b><strong class="number">'+esc(p.digits)+'</strong></span>'+(x.r?.equipment?'<span class="equip" title="装備あり">◆</span>':'')+'<span class="sub">'+(x.r?esc(x.r.flight)+' · '+x.r.time:'予定未確認')+(x.r&&state.plans[s.id]&&x.r.flight!==state.plans[s.id]?' <b title="配置指示と異なる">≠</b>':'')+'</span>'+(x.r&&x.r.status!=='予約'?'<span class="sub muted">出発済み？（'+x.r.status+'）</span>':'')+(p.flag==='unresolved'?'<span class="warn">要選択</span>':'')+(p.flag==='outside'?'<span class="sub">候補なし（保有外の可能性）</span>':'')+(x.v?.outside?'<span class="sub">保有外の候補</span>':'')+(collision(p)?'<span class="warn">取り違え注意：同じ4桁</span>':'');}
-return '<div class="slot"><span class="place-label" data-plan="'+esc(plan)+'">'+esc(locationName(s.id))+'</span><button class="'+cls+'" data-slot="'+s.id+'" aria-label="'+esc(locationName(s.id)+(p?' '+p.digits+' 詳細':' 4桁入力'))+'">'+inside+'</button>'+(s.area==='share'?'<button class="work-state" data-work="'+s.id+'" data-state="'+(state.work[s.id]??0)+'">'+CONFIG.work[state.work[s.id]??0]+' ↻</button>':'')+'</div>';}
+function tile(s){const p=state.placements[s.id],plan=state.plans[s.id]||'—';let inside=overview?'':'<span class="empty">＋ 4桁入力</span>',cls='tile';if(p){const x=classify(p);cls+=' '+x.kind+(x.soon?' soon':'')+(collision(p)?' collision':'');inside='<span class="identity"><b class="tag '+x.kind+'">'+CONFIG[x.kind].label+'</b><strong class="number">'+esc(p.digits)+'</strong></span>'+(x.r?.equipment?'<span class="equip" title="装備あり">◆</span>':'')+'<span class="sub">'+(x.r?esc(x.r.flight)+' · '+x.r.time:'予定未確認')+(x.r&&state.plans[s.id]&&x.r.flight!==state.plans[s.id]?' <b title="配置指示と異なる">≠</b>':'')+'</span>'+(x.r&&x.r.status!=='予約'?'<span class="sub muted">出発済み？（'+x.r.status+'）</span>':'')+(p.flag==='unresolved'?'<span class="warn">要選択</span>':'')+(p.flag==='outside'?'<span class="sub">候補なし（保有外の可能性）</span>':'')+(x.v?.outside?'<span class="sub">保有外の候補</span>':'')+(collision(p)?'<span class="warn">取り違え注意：同じ4桁</span>':'');}
+return '<div class="slot"><span class="place-label" data-plan="'+esc(plan)+'">'+esc(locationName(s.id))+'</span><button class="'+cls+'" data-slot="'+s.id+'" aria-label="'+esc(locationName(s.id)+(p?' '+p.digits+' 詳細':overview?' 空き枠（閲覧専用）':' 4桁入力'))+'">'+inside+'</button>'+(s.area==='share'?'<button class="work-state" '+(overview?'disabled aria-label="作業状態（閲覧専用）" ':'')+'data-work="'+s.id+'" data-state="'+(state.work[s.id]??0)+'">'+CONFIG.work[state.work[s.id]??0]+(overview?'':' ↻')+'</button>':'')+'</div>';}
 function section(area,body){const [name,bg,head]=CONFIG.areas[area];return '<section id="area-'+area+'" class="area '+area+(active===area?' active':'')+'" style="--ground:'+bg+';--head:'+head+'"><h2>'+name+'<small>'+SLOTS.filter(s=>s.area===area).length+'枠'+(area==='wait'?' / 指示32・閲覧のみ':'')+'</small></h2><div class="content">'+body+'</div></section>';}
 function spatialTile(s,mode){
 let html=tile(s),flight='<span class="flight-info">—</span>';
@@ -129,21 +152,23 @@ return html;
 function subArea(){const a=SLOTS.filter(s=>s.area==='sub');return section('sub','<div class="sub-layout">'+a.slice(0,8).map((s,i)=>'<div class="sub-position" style="grid-column:'+(i===0?2:i===1?3:(i-2)%3+1)+'">'+spatialTile(s,'sub-row')+'</div>').join('')+'<div class="sub-tail">'+a.slice(8).map(s=>spatialTile(s,'sub-tail')).join('')+'</div></div>');}
 function simple(area){return section(area,'<div class="simple-grid">'+SLOTS.filter(s=>s.area===area).map(tile).join('')+'</div>');}
 function render(){
-$('clock').value=state.clock;$('undo').disabled=!state.undo||pendingWrites>0||!ready;
+$('clock').value=state.clock;$('undo').disabled=overview||!state.undo||pendingWrites>0||!ready;
+$('reset').disabled=overview;$('erase').disabled=overview;
 $('tabs').innerHTML=Object.entries(CONFIG.areas).map(([a,[n,,c]])=>'<button style="--tab:'+c+'" data-tab="'+a+'" aria-selected="'+(active===a)+'">'+n+'</button>').join('');
 const wait=SLOTS.filter(s=>s.area==='wait');let w='<div class="wait-head"><span class="inst-title">指示・左</span><span>待機・左</span><span>番号</span><span>待機・右</span><span class="inst-title">指示・右</span></div>';
 for(let i=0;i<32;i+=2)w+='<div class="wait-row"><div class="instruction">'+esc(state.plans[wait[i].id]||'—')+'</div>'+tile(wait[i])+'<span class="lane-no">'+wait[i].label.replace('左','')+'</span>'+tile(wait[i+1])+'<div class="instruction">'+esc(state.plans[wait[i+1].id]||'—')+'</div></div>';
 const dep=SLOTS.filter(s=>s.area==='depart');
 const departure=dep.map((s,i)=>{const left=i<7,row=left?i+1:i-6;return '<div class="dep-position" style="grid-column:'+(left?1:2)+';grid-row:'+row+(s.label==='①'?' / span 2':'')+'">'+spatialTile(s,left?'left':'right')+'</div>';}).join('');
 $('map').innerHTML='<div class="column far-left">'+simple('vertical')+'</div><div class="column left">'+section('wait',w)+'</div><div class="column middle">'+section('depart','<div class="dep-grid">'+departure+'</div>')+'<div class="mini-two">'+simple('fuel')+simple('wash')+'</div></div><div class="column right"><div class="landmark">レンタカー共同店舗<br><small>位置の目印・データなし</small></div>'+simple('roof')+subArea()+simple('share')+'</div>';
+fitOverview();
 $('history').innerHTML=state.history.length?state.history.map(h=>'<li>'+esc((typeof h.at==='number'?new Date(h.at).toLocaleTimeString('ja-JP'):'送信待ち')+' / '+h.label+' / '+(h.byName||'名称未設定'))+'</li>').join(''):'<li>操作はまだありません</li>';
 }
-function openEditor(id){selected=id;$('edit-place').textContent=locationName(id);$('digits').value='';$('input-error').textContent='';$('editor').showModal();$('digits').focus();}
+function openEditor(id){if(overview)return;selected=id;$('edit-place').textContent=locationName(id);$('digits').value='';$('input-error').textContent='';$('editor').showModal();$('digits').focus();}
 function closeAll(){for(const d of document.querySelectorAll('dialog[open]'))d.close();}
-function ask(title,text,fn){$('confirm-title').textContent=title;$('confirm-text').textContent=text;confirmAction=fn;$('confirm').showModal();}
-function put(p){const old=p.reg?Object.keys(state.placements).find(id=>id!==selected&&state.placements[id].reg===p.reg):null;const target=selected;const finish=()=>{commit((old?'移動 '+locationName(old)+' → ': '配置 ')+locationName(target)+' / '+p.digits,()=>{if(old)delete state.placements[old];state.placements[target]=clone(p);});};closeAll();if(old)ask('車両の移動確認','この車両は'+locationName(old)+'にあります。移動しますか？（移動先：'+locationName(target)+'）',finish);else finish();}
-function choose(digits){const candidates=VEHICLES.filter(v=>v.digits===digits);pending=digits;if(candidates.length===1)return put({digits,reg:candidates[0].reg});if(candidates.length===0)return put({digits,reg:null,flag:'outside'});closeAll();$('candidates').innerHTML=candidates.map(v=>'<button class="candidate" data-reg="'+v.reg+'"><strong>'+esc(v.name)+' / '+esc(v.full)+'</strong>クラス '+esc(v.class)+' · 管理店舗 '+esc(v.store)+'</button>').join('');$('picker').showModal();}
-function showDetail(id){selected=id;const p=state.placements[id];if(!p)return openEditor(id);const x=classify(p);$('detail-title').textContent=locationName(id)+' / '+p.digits;const rows=[['車名',x.v?.name||'未確定'],['フル車番',x.v?.full||'未確定（4桁 '+p.digits+'）'],['出発',x.r?(x.r.day==='today'?'今日':'明日')+' '+x.r.time:'予定未確認'],['便・時刻枠',x.r?.flight||'—'],['装備',x.r?.equipment||'なし'],['契約状態',x.r?.status||'未確認'],['管理店舗',x.v?.store||'未確認'],['注意',[p.flag==='unresolved'?'要選択':p.flag==='outside'?'候補なし（保有外の可能性）':'',collision(p)?'取り違え注意：同じ4桁の別車両あり':'',x.r?.status!=='予約'&&x.r?'出発済み？':'',x.v?.outside?'保有外の車両候補':'',x.r?.note||''].filter(Boolean).join(' / ')||'—']];$('detail-body').innerHTML='<dl class="detail-grid">'+rows.map(([k,v])=>'<dt>'+k+'</dt><dd>'+esc(v)+'</dd>').join('')+'</dl><p class="help">装備：C＝チャイルドシート、J＝ジュニアシート、B＝ベビーシート</p>';$('resolve').hidden=p.flag!=='unresolved';$('detail').showModal();}
+function ask(title,text,fn){if(overview)return;$('confirm-title').textContent=title;$('confirm-text').textContent=text;confirmAction=fn;$('confirm').showModal();}
+function put(p){if(overview)return;const old=p.reg?Object.keys(state.placements).find(id=>id!==selected&&state.placements[id].reg===p.reg):null;const target=selected;const finish=()=>{commit((old?'移動 '+locationName(old)+' → ': '配置 ')+locationName(target)+' / '+p.digits,()=>{if(old)delete state.placements[old];state.placements[target]=clone(p);});};closeAll();if(old)ask('車両の移動確認','この車両は'+locationName(old)+'にあります。移動しますか？（移動先：'+locationName(target)+'）',finish);else finish();}
+function choose(digits){if(overview)return;const candidates=VEHICLES.filter(v=>v.digits===digits);pending=digits;if(candidates.length===1)return put({digits,reg:candidates[0].reg});if(candidates.length===0)return put({digits,reg:null,flag:'outside'});closeAll();$('candidates').innerHTML=candidates.map(v=>'<button class="candidate" data-reg="'+v.reg+'"><strong>'+esc(v.name)+' / '+esc(v.full)+'</strong>クラス '+esc(v.class)+' · 管理店舗 '+esc(v.store)+'</button>').join('');$('picker').showModal();}
+function showDetail(id){selected=id;const p=state.placements[id];if(!p)return openEditor(id);const x=classify(p);$('detail-title').textContent=locationName(id)+' / '+p.digits;const rows=[['車名',x.v?.name||'未確定'],['フル車番',x.v?.full||'未確定（4桁 '+p.digits+'）'],['出発',x.r?(x.r.day==='today'?'今日':'明日')+' '+x.r.time:'予定未確認'],['便・時刻枠',x.r?.flight||'—'],['装備',x.r?.equipment||'なし'],['契約状態',x.r?.status||'未確認'],['管理店舗',x.v?.store||'未確認'],['注意',[p.flag==='unresolved'?'要選択':p.flag==='outside'?'候補なし（保有外の可能性）':'',collision(p)?'取り違え注意：同じ4桁の別車両あり':'',x.r?.status!=='予約'&&x.r?'出発済み？':'',x.v?.outside?'保有外の車両候補':'',x.r?.note||''].filter(Boolean).join(' / ')||'—']];$('detail-body').innerHTML='<dl class="detail-grid">'+rows.map(([k,v])=>'<dt>'+k+'</dt><dd>'+esc(v)+'</dd>').join('')+'</dl><p class="help">装備：C＝チャイルドシート、J＝ジュニアシート、B＝ベビーシート</p>';$('change').hidden=overview;$('clear').hidden=overview;$('resolve').hidden=overview||p.flag!=='unresolved';$('detail-readonly').hidden=!overview;$('detail').showModal();}
 $('keys').innerHTML=['1','2','3','4','5','6','7','8','9','消去','0','⌫'].map(k=>'<button type="button" data-key="'+k+'">'+k+'</button>').join('');
 $('keys').onclick=e=>{const k=e.target.dataset.key;if(!k)return;const input=$('digits');input.value=k==='消去'?'':k==='⌫'?input.value.slice(0,-1):(input.value+k).slice(0,4);};
 $('digits').oninput=e=>{e.target.value=e.target.value.replace(/[^0-9]/g,'').slice(0,4);};
@@ -151,13 +176,13 @@ $('digits').onkeydown=e=>{if(e.key==='Enter')$('submit').click();};
 $('submit').onclick=()=>{const d=$('digits').value;if(!/^[0-9]{4}$/.test(d)){$('input-error').textContent='数字4桁を入力してください';return;}choose(d);};
 $('candidates').onclick=e=>{const b=e.target.closest('[data-reg]');if(b)put({digits:pending,reg:b.dataset.reg});};
 $('unresolved').onclick=()=>put({digits:pending,reg:null,flag:'unresolved'});
-$('confirm-yes').onclick=()=>{const fn=confirmAction;confirmAction=null;$('confirm').close();if(fn)fn();};
+$('confirm-yes').onclick=()=>{if(overview)return;const fn=confirmAction;confirmAction=null;$('confirm').close();if(fn)fn();};
 $('confirm-no').onclick=()=>{confirmAction=null;$('confirm').close();};
 $('change').onclick=()=>{$('detail').close();openEditor(selected);};
-$('resolve').onclick=()=>choose(state.placements[selected].digits);
+$('resolve').onclick=()=>{if(!overview)choose(state.placements[selected].digits);};
 $('clear').onclick=()=>{const id=selected;closeAll();commit('クリア '+locationName(id),()=>{delete state.placements[id];});};
 $('undo').onclick=()=>{
-  if(!state.undo||pendingWrites)return;
+  if(overview||!state.undo||pendingWrites)return;
   const restore=clone(state.undo),patch={};
   for(const [path,value] of Object.entries(restore))patch[path]=path==='placements'&&value?Object.fromEntries(Object.entries(value).map(([id,p])=>[id,stamped(p)])):path.startsWith('placements/')&&value?stamped(value):value;
   sendPatch('直前操作を取り消し',patch,null,{undo:true});
@@ -177,7 +202,7 @@ $('erase').onclick=()=>ask('全消去しますか？','共有中の配置・作�
   $('save-status').textContent='全消去を送信中…';
   update(target,{placements:null,work:null,plans:null,history:{[key]:{at:serverTimestamp(),label:'全消去',byName:deviceName}}}).then(()=>{if(gen===generation)$('save-status').textContent='送信完了 '+((performance.now()-started)/1000).toFixed(1)+'秒';}).catch(e=>{if(gen===generation){state.undo=null;permissionError(e);}}).finally(()=>{pendingWrites--;render();});
 });
-document.addEventListener('click',e=>{const close=e.target.closest('[data-close]');if(close)$(close.dataset.close).close();const tab=e.target.closest('[data-tab]');if(tab){active=tab.dataset.tab;render();}const work=e.target.closest('[data-work]');if(work){const id=work.dataset.work;commit(locationName(id)+' 作業状態を変更',()=>{state.work[id]=((state.work[id]??0)+1)%3;});}const b=e.target.closest('[data-slot]');if(b&&!longPressed){state.placements[b.dataset.slot]?showDetail(b.dataset.slot):openEditor(b.dataset.slot);}longPressed=false;});
+document.addEventListener('click',e=>{const close=e.target.closest('[data-close]');if(close)$(close.dataset.close).close();const tab=e.target.closest('[data-tab]');if(tab){active=tab.dataset.tab;render();}const work=e.target.closest('[data-work]');if(work&&!overview){const id=work.dataset.work;commit(locationName(id)+' 作業状態を変更',()=>{state.work[id]=((state.work[id]??0)+1)%3;});}const b=e.target.closest('[data-slot]');if(b&&!longPressed){state.placements[b.dataset.slot]?showDetail(b.dataset.slot):openEditor(b.dataset.slot);}longPressed=false;});
 let timer=null,longPressed=false;
 document.addEventListener('pointerdown',e=>{const b=e.target.closest('[data-slot]');if(b&&state.placements[b.dataset.slot])timer=setTimeout(()=>{longPressed=true;showDetail(b.dataset.slot);},600);});
 for(const type of ['pointerup','pointercancel','pointermove'])document.addEventListener(type,()=>clearTimeout(timer));
@@ -187,7 +212,7 @@ render();if(accessKey&&deviceName)connect();else gate();
 <style>
 *{box-sizing:border-box}body{margin:0;background:#eef2f5;color:#182733;font:14px 'Yu Gothic UI','Meiryo',sans-serif}button,input,select{font:inherit}button,select{cursor:pointer;min-height:44px;border:1px solid #b7c2cc;border-radius:5px;background:#fff;color:#182733;padding:7px 12px}button:hover{filter:brightness(.96)}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #182733;outline-offset:2px}button:disabled{opacity:.45;cursor:default}header{padding:17px 22px 12px;background:#fff;border-bottom:1px solid #c5cdd5}h1{font-size:23px;margin:0 0 7px}.eyebrow{font-size:12px;font-weight:bold;letter-spacing:.12em;color:#526878}.topline,.tools,.legend{display:flex;align-items:center;flex-wrap:wrap;gap:10px}.topline{justify-content:space-between}.notice{font-weight:bold;color:#6c4a12;background:#fff3cd;padding:8px 12px;border-radius:4px;margin:10px 0}.tools{font-size:13px}.stamp{font-weight:bold}.legend{margin-top:10px;font-size:12px;gap:7px 15px}.tag{display:inline-flex;background:var(--unknown);color:#fff;border-radius:3px;padding:1px 5px;font-size:16px;line-height:1.6;font-weight:800;flex-shrink:0}.tag.today{background:var(--today)}.tag.tomorrow{background:var(--tomorrow)}.redsample{display:inline-block;width:5px;height:20px;background:var(--danger);vertical-align:middle}.muted{color:#60707e}.danger{color:var(--danger);font-weight:bold}main{padding:14px 18px}.map{display:grid;grid-template-columns:minmax(410px,1.24fr) minmax(330px,1fr) minmax(280px,.85fr);gap:14px;max-width:1760px;margin:auto;align-items:start}.column{display:grid;gap:12px}.area{background:var(--ground);border:1px solid #c1ccd4;border-radius:6px;overflow:hidden}.area h2{margin:0;background:var(--head);color:white;font-size:15px;padding:8px 10px;display:flex;justify-content:space-between;gap:8px}.area h2 small{font-size:11px;align-self:center}.content{padding:8px}.wait-head,.wait-row{display:grid;grid-template-columns:64px minmax(0,1fr) 28px minmax(0,1fr) 64px;gap:4px;align-items:stretch}.wait-head{text-align:center;font-size:11px;margin-bottom:5px}.wait-row{margin-bottom:5px}.lane-no{align-self:center;text-align:center;font-weight:bold}.instruction{background:#F3E8FF;color:#6330ac;font-size:10px;display:flex;align-items:center;justify-content:center;border:1px solid #dfc9f5;border-radius:3px;overflow-wrap:anywhere;padding:3px}.inst-title{color:#7C3AED;font-weight:bold}.slot{min-width:0}.tile{display:block;position:relative;text-align:left;width:100%;border:1px solid #aebec8;border-radius:3px;min-height:67px;padding:6px 7px;background:#ffffffd9;overflow:hidden}.tile.unknown{background:#e5e7eb;color:#59636f}.tile.soon{border-left:5px solid var(--danger);padding-left:3px}.tile.collision{outline:2px solid var(--danger);outline-offset:-2px}.tile .number{font-size:25px;font-weight:800;letter-spacing:.03em;line-height:1.12;font-variant-numeric:tabular-nums}.identity{display:flex;gap:5px;align-items:center;padding-right:8px}.sub{font-size:10px;display:block;line-height:1.45;margin-top:3px}.warn{font-size:10px;display:block;color:var(--danger);font-weight:bold}.equip{position:absolute;right:3px;top:2px;font-size:10px;font-weight:bold}.empty{color:#6b7c87;font-size:12px;display:flex;align-items:center;justify-content:center;gap:5px}.place-label{font-size:10px;display:block;color:#53616c;margin-bottom:2px}.dep-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.dep-col{display:grid;gap:5px}.dep-cell{display:grid;grid-template-columns:23px minmax(0,1fr);gap:3px}.mini-two{display:grid;grid-template-columns:1fr 1fr;gap:12px}.simple-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.fuel .simple-grid,.wash .simple-grid{grid-template-columns:1fr}.landmark{padding:17px;background:#dde1e5;border:1px dashed #8795a0;color:#57616a;text-align:center;font-weight:bold;font-size:14px}.vertical{grid-column:1/-1}.vertical .simple-grid{grid-template-columns:repeat(8,minmax(0,1fr))}.work-state{width:100%;min-height:36px;border-radius:0 0 3px 3px;font-size:11px;padding:4px}.work-state[data-state="1"]{background:#fff3cd}.work-state[data-state="2"]{background:#d9f4df}.tabs{display:none}footer{max-width:1760px;margin:12px auto 0}.history{background:#fff;padding:10px;border:1px solid #ccd5db;border-radius:5px}summary{cursor:pointer;font-weight:bold;min-height:28px}.history ol{margin:5px 0;padding-left:24px;font-size:12px}.help{font-size:12px;margin:8px 0;color:#52616e}dialog{border:0;border-radius:10px;box-shadow:0 15px 70px #0005;padding:20px;width:min(510px,calc(100% - 24px));max-height:92dvh;overflow:auto;color:#182733}dialog::backdrop{background:#17253099}dialog h2{margin:0 0 10px;font-size:21px}.dialog-top{display:flex;justify-content:space-between;align-items:start;gap:8px}.close{min-width:44px;padding:5px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.primary{background:#183e56;color:#fff;border-color:#183e56}.number-input{width:100%;font-size:38px;text-align:center;letter-spacing:.16em;font-weight:bold;border:2px solid #8a9ca9;border-radius:5px;min-height:65px;margin:8px 0}.keys{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.keys button{min-height:56px;font-size:24px;background:#f0f4f7}.candidate{width:100%;text-align:left;margin:6px 0;padding:12px;line-height:1.7}.candidate strong{display:block;font-size:17px}.detail-grid{display:grid;grid-template-columns:100px 1fr;gap:9px;font-size:14px}.detail-grid dt{color:#60707e}.detail-grid dd{margin:0;font-weight:bold;overflow-wrap:anywhere}#save-status{font-size:12px}#input-error{min-height:20px}.full{width:100%}
 @media(min-width:601px) and (max-width:1080px){.map{grid-template-columns:minmax(380px,1.2fr) minmax(290px,1fr)}.right{grid-column:1/-1;grid-template-columns:repeat(2,1fr)}.vertical .simple-grid{grid-template-columns:repeat(4,1fr)}}
-@media(max-width:600px){header{padding:12px}h1{font-size:20px}.eyebrow{font-size:10px}.notice{font-size:12px}.tools{gap:7px}.tools button{padding:6px 9px;font-size:12px}.legend{font-size:11px;gap:5px 10px}main{padding:9px 10px}.map,.column,.mini-two{display:block}.area{display:none}.area.active{display:block}.landmark{display:none}.tabs{display:flex;overflow-x:auto;gap:6px;padding:5px 0 10px;position:sticky;top:0;background:#eef2f5;z-index:2}.tabs button{white-space:nowrap;flex-shrink:0;min-height:44px;border-bottom:4px solid var(--tab)}.tabs button[aria-selected="true"]{background:var(--tab);color:#fff}.wait-head{display:none}.wait-row{display:flex;flex-direction:column;gap:7px;margin:0 0 7px}.wait-row .lane-no{display:none}.wait-row .instruction{display:none}.wait-row .slot{display:block}.slot .place-label{font-size:12px}.wait-row .place-label::after{content:'　指示 ' attr(data-plan);color:#7C3AED;font-size:11px}.tile{min-height:91px;padding:10px 13px}.tile .number{font-size:34px}.tag{font-size:20px}.sub{font-size:13px}.warn{font-size:12px}.equip{right:9px;top:6px;font-size:12px}.dep-grid,.dep-col,.simple-grid,.vertical .simple-grid,.fuel .simple-grid,.wash .simple-grid{display:block}.dep-cell{display:block;margin-bottom:9px}.dep-cell>.lane-no{display:none}.simple-grid>.slot{margin-bottom:10px}.content{padding:10px}.work-state{font-size:14px;min-height:44px}.area h2{font-size:17px}.detail-grid{grid-template-columns:82px 1fr}.keys button{min-height:58px}.actions button{min-height:48px}.empty{font-size:15px}.help{line-height:1.7}}
+@media(max-width:600px){header{padding:12px}h1{font-size:20px}.eyebrow{font-size:10px}.notice{font-size:12px}.tools{gap:7px}.tools button{padding:6px 9px;font-size:12px}.legend{font-size:11px;gap:5px 10px}main{padding:9px 10px}body:not(.overview) .map,body:not(.overview) .column,body:not(.overview) .mini-two{display:block}body:not(.overview) .area{display:none}body:not(.overview) .area.active{display:block}body:not(.overview) .landmark{display:none}body:not(.overview) .tabs{display:flex;overflow-x:auto;gap:6px;padding:5px 0 10px;position:sticky;top:0;background:#eef2f5;z-index:2}body:not(.overview) .tabs button{white-space:nowrap;flex-shrink:0;min-height:44px;border-bottom:4px solid var(--tab)}body:not(.overview) .tabs button[aria-selected="true"]{background:var(--tab);color:#fff}body:not(.overview) .wait-head{display:none}body:not(.overview) .wait-row{display:flex;flex-direction:column;gap:7px;margin:0 0 7px}body:not(.overview) .wait-row .lane-no{display:none}body:not(.overview) .wait-row .instruction{display:none}body:not(.overview) .wait-row .slot{display:block}body:not(.overview) .slot .place-label{font-size:12px}body:not(.overview) .wait-row .place-label::after{content:'　指示 ' attr(data-plan);color:#7C3AED;font-size:11px}body:not(.overview) .tile{min-height:91px;padding:10px 13px}body:not(.overview) .tile .number{font-size:34px}body:not(.overview) .tag{font-size:20px}body:not(.overview) .sub{font-size:13px}body:not(.overview) .warn{font-size:12px}body:not(.overview) .equip{right:9px;top:6px;font-size:12px}body:not(.overview) .dep-grid,body:not(.overview) .dep-col,body:not(.overview) .simple-grid,body:not(.overview) .vertical .simple-grid,body:not(.overview) .fuel .simple-grid,body:not(.overview) .wash .simple-grid{display:block}body:not(.overview) .dep-cell{display:block;margin-bottom:9px}body:not(.overview) .dep-cell>.lane-no{display:none}body:not(.overview) .simple-grid>.slot{margin-bottom:10px}body:not(.overview) .content{padding:10px}body:not(.overview) .work-state{font-size:14px;min-height:44px}body:not(.overview) .area h2{font-size:17px}.detail-grid{grid-template-columns:82px 1fr}.keys button{min-height:58px}.actions button{min-height:48px}body:not(.overview) .empty{font-size:15px}.help{line-height:1.7}}
 
 /* Web試作2: 実物の向き。既存の操作・意味色は共通のまま。 */
 .map{grid-template-columns:minmax(140px,.44fr) minmax(410px,1.36fr) minmax(380px,1.24fr) minmax(280px,.96fr);gap:12px}
@@ -228,33 +253,30 @@ render();if(accessKey&&deviceName)connect();else gate();
 .map{grid-template-columns:140px minmax(0,1fr)}.middle{grid-column:2}.right{grid-column:1 / -1}
 .wait-head,.wait-row{grid-template-columns:46px minmax(0,1fr) 24px minmax(0,1fr) 46px}
 }
-@media(max-width:600px){
-.map{display:block}.vertical .simple-grid{display:block}
-.dep-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(8,110px);gap:5px 0}
-.layout-left{grid-template-columns:41px minmax(0,1fr) 16px;gap:2px}
-.layout-right{grid-template-columns:16px minmax(0,1fr) 41px;gap:2px}
-.layout-left .number,.layout-right .number{font-size:24px}
-.layout-left .tag,.layout-right .tag{font-size:15px;padding:1px 3px}
-.layout-left .tile,.layout-right .tile{padding:5px 3px}
-.layout-left .empty,.layout-right .empty{font-size:12px;white-space:normal}
-.flight-info{font-size:10px}.lane-number{font-size:14px}
-.sub-layout{gap:14px 6px}.layout-sub-row{grid-template-rows:96px minmax(32px,auto)}
-.layout-sub-row .number,.layout-sub-tail .number{font-size:25px}
-.layout-sub-row .tag,.layout-sub-tail .tag{font-size:16px}
-.layout-sub-row .empty,.layout-sub-tail .empty{font-size:12px}
-.layout-sub-tail,.layout-sub-tail>.tile{height:96px}
-.right{display:block}
+@media(max-width:600px){body:not(.overview) .map{display:block}body:not(.overview) .vertical .simple-grid{display:block}body:not(.overview) .dep-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(8,110px);gap:5px 0}body:not(.overview) .layout-left{grid-template-columns:41px minmax(0,1fr) 16px;gap:2px}body:not(.overview) .layout-right{grid-template-columns:16px minmax(0,1fr) 41px;gap:2px}body:not(.overview) .layout-left .number,body:not(.overview) .layout-right .number{font-size:24px}body:not(.overview) .layout-left .tag,body:not(.overview) .layout-right .tag{font-size:15px;padding:1px 3px}body:not(.overview) .layout-left .tile,body:not(.overview) .layout-right .tile{padding:5px 3px}body:not(.overview) .layout-left .empty,body:not(.overview) .layout-right .empty{font-size:12px;white-space:normal}body:not(.overview) .flight-info{font-size:10px}body:not(.overview) .lane-number{font-size:14px}body:not(.overview) .sub-layout{gap:14px 6px}body:not(.overview) .layout-sub-row{grid-template-rows:96px minmax(32px,auto)}body:not(.overview) .layout-sub-row .number,body:not(.overview) .layout-sub-tail .number{font-size:25px}body:not(.overview) .layout-sub-row .tag,body:not(.overview) .layout-sub-tail .tag{font-size:16px}body:not(.overview) .layout-sub-row .empty,body:not(.overview) .layout-sub-tail .empty{font-size:12px}body:not(.overview) .layout-sub-tail,body:not(.overview) .layout-sub-tail>.tile{height:96px}body:not(.overview) .right{display:block}
 }
-@media(max-width:350px){
-.layout-left,.layout-right{grid-template-columns:14px minmax(0,1fr)}
-.layout-left>.tile,.layout-right>.tile{grid-column:2}
-.layout-left>.lane-number,.layout-right>.lane-number{grid-column:1}
-.layout-left>.flight-info,.layout-right>.flight-info{grid-column:2;grid-row:2}
-.dep-grid{grid-template-rows:repeat(8,140px)}
-.sub-layout{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 4px}
-.layout-sub-row .number,.layout-sub-tail .number{font-size:21px}
-.layout-sub-row .tag,.layout-sub-tail .tag{font-size:13px}
+@media(max-width:350px){body:not(.overview) .layout-left,body:not(.overview) .layout-right{grid-template-columns:14px minmax(0,1fr)}body:not(.overview) .layout-left>.tile,body:not(.overview) .layout-right>.tile{grid-column:2}body:not(.overview) .layout-left>.lane-number,body:not(.overview) .layout-right>.lane-number{grid-column:1}body:not(.overview) .layout-left>.flight-info,body:not(.overview) .layout-right>.flight-info{grid-column:2;grid-row:2}body:not(.overview) .dep-grid{grid-template-rows:repeat(8,140px)}body:not(.overview) .sub-layout{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 4px}body:not(.overview) .layout-sub-row .number,body:not(.overview) .layout-sub-tail .number{font-size:21px}body:not(.overview) .layout-sub-row .tag,body:not(.overview) .layout-sub-tail .tag{font-size:13px}
 }
+
+/* 全体図は地図だけをPC相当の固定幅で描画。UIと標準ピンチズームは縮小しない。 */
+.view-switch{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0}
+.view-switch button[aria-pressed="true"]{background:#182733;color:white}
+.overview-help{margin:0;font-size:13px}
+body:not(.overview) .overview-help{display:none}
+.overview .area-help{display:none}
+.overview #tabs{display:none}
+.overview #map-frame{position:relative;overflow:hidden;overflow-anchor:none;touch-action:auto}
+.overview #map{position:absolute;left:0;top:0;width:1400px;max-width:none;margin:0;transform-origin:0 0;grid-template-columns:minmax(140px,.44fr) minmax(410px,1.36fr) minmax(380px,1.24fr) minmax(280px,.96fr)}
+.overview .right{grid-column:auto;grid-template-columns:none}
+.overview .right .landmark{grid-column:auto}
+.overview .middle{grid-column:auto}
+.overview .vertical .simple-grid{grid-template-columns:minmax(0,1fr)}
+.overview .wait-head,.overview .wait-row{grid-template-columns:64px minmax(0,1fr) 28px minmax(0,1fr) 64px}
+.overview .work-state{opacity:1;cursor:default}
+.overview .empty{display:none}
+.overview .area{display:block}
+.overview .tile:empty{cursor:default}
+[hidden]{display:none!important}
 </style>
 </head>
 <body>
@@ -262,18 +284,19 @@ render();if(accessKey&&deviceName)connect();else gate();
 <div class="eyebrow">広島空港店 / PARKING OPERATIONS / ダミーデータ専用</div>
 <div class="topline"><h1>出発準備ダッシュボード｜同期試作</h1><span class="stamp">13時のデータ（模擬）</span></div>
 <div class="notice">同期の実験用・ダミーデータ専用。送信完了前はこのページを閉じないでください。</div>
+<nav class="view-switch" aria-label="表示切替"><button id="view-overview" aria-pressed="false">全体図</button><button id="view-areas" aria-pressed="true">エリア別</button><p class="overview-help">閲覧専用：ピンチで拡大・指で移動。入力はエリア別表示で行います</p></nav>
 <div class="tools"><label>模擬の現在時刻 <select id="clock"><option>9:00</option><option selected>13:00</option><option>17:30</option></select></label><span>今日＝模擬1日目 / 明日＝模擬2日目</span><button id="undo">直前操作を元に戻す</button><button id="reset">ダミー初期データを入れる</button><button id="erase">全消去</button><button id="rename">端末名を変更</button><button id="change-key">合言葉を変更</button><b id="device-label"></b><span id="save-status" role="status"></span></div>
 <div class="notice" id="connection" role="status">切断中（再接続待ち・入力は後で送信）</div><p id="last-received" role="status">最終受信：まだありません</p><details><summary>同期の実測</summary><p class="help">他端末の配置更新のサーバー確定時刻から受信まで（推定）。初回一覧は除外。クリアは時刻情報が消えるため計測対象外。負値は時刻推定の誤差です。</p><ol id="measurements"><li>まだありません</li></ol></details><div class="legend"><span><b class="tag today">今</b> 今日出発</span><span><b class="tag tomorrow">明</b> 明日出発</span><span><i class="redsample"></i> 1時間以内</span><span>灰色＝予定未確認</span><span>◆＝装備あり</span><span class="danger">赤文字＝取り違え注意・要選択</span><span>≠＝配置指示と異なる</span></div>
 </header>
 <main>
 <nav class="tabs" aria-label="エリア切替" id="tabs"></nav>
-<div class="map" id="map"></div>
-<footer><p class="help">空き枠を押す → 4桁入力。車両のある枠を押す → 詳細・変更・クリア。長押しでも詳細。配置指示はExcel側の読み取り表示です。全車番・車名・便は生成した架空の例（実車との一致を意図しない）です。</p><details class="history" open><summary>操作履歴（共有・直近20件）</summary><ol id="history"></ol></details></footer>
+<div id="map-frame"><div class="map" id="map"></div></div>
+<footer><p class="help"><span class="area-help">空き枠を押す → 4桁入力。車両のある枠を押す → 詳細・変更・クリア。長押しでも詳細。</span><span class="overview-help">全体図は閲覧専用です。車両のある枠を押すと詳細を確認できます。入力はエリア別表示で行います。</span>配置指示はExcel側の読み取り表示です。全車番・車名・便は生成した架空の例（実車との一致を意図しない）です。</p><details class="history" open><summary>操作履歴（共有・直近20件）</summary><ol id="history"></ol></details></footer>
 </main>
 <dialog id="editor" aria-labelledby="edit-title"><div class="dialog-top"><h2 id="edit-title">4桁入力</h2><button class="close" data-close="editor" aria-label="入力を閉じる">×</button></div><p id="edit-place" class="muted"></p><label for="digits">車番の下4桁（先頭の0も入力）</label><input id="digits" class="number-input" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" placeholder="0000"><div id="input-error" class="danger" role="alert"></div><div class="keys" id="keys"></div><div class="actions"><button id="submit" class="primary full">この4桁で確定</button></div></dialog>
 <dialog id="picker" aria-labelledby="pick-title"><div class="dialog-top"><h2 id="pick-title">車両を選んでください</h2><button class="close" data-close="picker" aria-label="候補選択を閉じる">×</button></div><p>4桁が同じ車両が複数あります。フル車番を確認してください。</p><div id="candidates"></div><button id="unresolved" class="full">未選択のまま置く（要選択）</button></dialog>
 <dialog id="confirm" aria-labelledby="confirm-title"><h2 id="confirm-title"></h2><p id="confirm-text"></p><div class="actions"><button id="confirm-yes" class="primary">はい</button><button id="confirm-no">いいえ</button></div></dialog>
-<dialog id="detail" aria-labelledby="detail-title"><div class="dialog-top"><h2 id="detail-title">車両の詳細</h2><button class="close" data-close="detail" aria-label="詳細を閉じる">×</button></div><div id="detail-body"></div><div class="actions"><button id="change" class="primary">4桁を入力・変更</button><button id="resolve">候補を選ぶ</button><button id="clear">この枠をクリア</button></div></dialog>
+<dialog id="detail" aria-labelledby="detail-title"><div class="dialog-top"><h2 id="detail-title">車両の詳細</h2><button class="close" data-close="detail" aria-label="詳細を閉じる">×</button></div><div id="detail-body"></div><p id="detail-readonly" class="help" hidden>入力はエリア別表示で行います</p><div class="actions"><button id="change" class="primary">4桁を入力・変更</button><button id="resolve">候補を選ぶ</button><button id="clear">この枠をクリア</button></div></dialog>
 <section id="access-gate" style="position:fixed;inset:0;z-index:100;background:#eef2f5;overflow:auto;padding:30px 16px" aria-labelledby="gate-title">
 <form id="access-form" style="max-width:440px;margin:6vh auto;background:white;padding:24px;border-radius:8px">
 <h2 id="gate-title">同期試作に参加</h2><p>同じ合言葉の端末で配置を共有します。</p>
