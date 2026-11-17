@@ -11,7 +11,7 @@
 // 親作業でURLだけ置換。合言葉は公開ファイルに書かない。
 const DB_URL='https://departure-board-test-default-rtdb.asia-southeast1.firebasedatabase.app';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-import { getDatabase, ref, onValue, update, push, query, limitToLast, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js';
+import { getDatabase, ref, onValue, update, push, query, limitToLast, serverTimestamp, runTransaction } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js';
 // 表示と判定を分離。札の文字・意味色・閾値・エリア色はここで変更できます。
 const CONFIG={today:{label:'今',color:'#E8590C'},tomorrow:{label:'明',color:'#1D4ED8'},unknown:{label:'？',color:'#9CA3AF'},danger:'#D00000',soonMinutes:60,equipment:{C:'チャイルドシート',J:'ジュニアシート',B:'ベビーシート'},work:['未着手','作業中','準備OK'],areas:{wait:['待機レーン','#DDF4FF','#0284C7'],depart:['出発レーン','#FFF7CC','#CA8A04'],fuel:['給油','#E3F5E1','#16A34A'],wash:['洗車','#FCE7F3','#DB2777'],vertical:['縦置き','#DFF5EE','#0D9488'],roof:['屋根下','#F5EBDD','#92400E'],sub:['サブ（旧店舗）','#E8EAF6','#4F46E5'],share:['カーシェア','#F3F0D6','#7A6A12']}};
 const PREF='parking-sync-v1-';
@@ -81,23 +81,59 @@ function receivePlacements(next){
   previousPlacements=clone(next);state.placements=next;
   $('measurements').innerHTML=measurements.length?measurements.map(m=>'<li>'+esc(m.time+' / '+m.place+' / '+m.digits+' / '+m.from+' / '+m.seconds+'秒')+'</li>').join(''):'<li>まだありません</li>';
 }
-function connect(){
-  stopSession();
+const NAME_TAKEN='このお名前は別の端末で使われています。別のお名前を入力してください（例：名字＋名前の頭文字）';
+const NAME_TTL=7*24*60*60*1000;
+let nameBusy=false, refreshCurrentName=()=>{};
+function normalizeName(name){return name.trim().normalize('NFKC').replace(/\s/gu,'').toLowerCase();}
+function nameKey(name){return encodeURIComponent(normalizeName(name)).replace(/\./g,'%2E');}
+function nameError(name){
+  if(!normalizeName(name))return 'お名前を入力してください';
+  if(name.length>20)return 'お名前は20文字以内で入力してください';
+  try{nameKey(name);}catch{return 'お名前の文字を確認してください';}
+  return '';
+}
+function nameRef(key,name){return ref(db,'s/'+key+'/names/'+nameKey(name));}
+async function claimName(key,name){
+  // 競合時の再実行でも、必ずサーバー推定時刻で判定。ローカル先行表示はしない。
+  const result=await runTransaction(nameRef(key,name),current=>{
+    if(current&&current.deviceId!==deviceId&&!(typeof current.at==='number'&&Date.now()+offset-current.at>NAME_TTL))return;
+    return {deviceId,name,at:serverTimestamp()};
+  },{applyLocally:false});
+  return result.committed;
+}
+function connect(candidate=deviceName){
+  stopSession();gate();$('access-name').value=candidate;
+  const invalid=nameError(candidate);if(invalid){$('access-error').textContent=invalid;return;}
   if(!/^https:\/\//.test(DB_URL)){gate('データベースURLが未設定です。設定担当者がDB_URLを置き換えてください。');return;}
   try{
     if(!db)db=getDatabase(initializeApp({databaseURL:DB_URL}));
-    root=ref(db,'s/'+accessKey);const gen=generation;const loaded=new Set();offsetReady=false;
+    root=ref(db,'s/'+accessKey);const gen=generation,key=accessKey,loaded=new Set();offsetReady=false;
+    let nameConfirmed=false,claiming=false;
+    const updateReady=()=>{ready=nameConfirmed&&loaded.size===3;render();};
+    const refreshName=async()=>{
+      if(!connected||!offsetReady||claiming||nameBusy||gen!==generation)return;
+      // 改名後の再接続では、登録成功済みの現在名を更新する。
+      if(nameConfirmed)candidate=deviceName;
+      claiming=true;nameConfirmed=false;updateReady();
+      try{
+        const accepted=await claimName(key,candidate);
+        if(gen!==generation)return;
+        if(!accepted){stopSession();gate(NAME_TAKEN);$('access-name').value=candidate;$('access-name').focus();return;}
+        deviceName=candidate;prefSet('name',deviceName);nameConfirmed=true;updateReady();
+        $('device-label').textContent='端末：'+deviceName;
+        $('access-gate').hidden=true;document.querySelector('header').inert=false;document.querySelector('main').inert=false;
+      }catch(e){if(gen===generation){permissionError(e);if(!/permission.?denied/i.test(e.code||e.message||'')){stopSession();gate('同期エラー：'+(e.code||e.message));$('access-name').value=candidate;}}}
+      finally{claiming=false;}
+    };
+    refreshCurrentName=refreshName;
     const watch=(target,fn)=>unsubscribers.push(onValue(target,snap=>{if(gen===generation)fn(snap.val());},e=>{if(gen===generation)permissionError(e);}));
-    watch(ref(db,'.info/serverTimeOffset'),v=>{offset=Number(v)||0;offsetReady=true;});
-    watch(ref(db,'.info/connected'),v=>{connected=v===true;connectionStatus();});
-    for(const part of ['placements','work','plans'])watch(ref(db,'s/'+accessKey+'/'+part),v=>{
+    watch(ref(db,'.info/serverTimeOffset'),v=>{offset=Number(v)||0;offsetReady=true;refreshName();});
+    watch(ref(db,'.info/connected'),v=>{const was=connected;connected=v===true;connectionStatus();if(connected&&!was)refreshName();});
+    for(const part of ['placements','work','plans'])watch(ref(db,'s/'+key+'/'+part),v=>{
       if(part==='placements')receivePlacements(v||{});else state[part]=v||{};
-      loaded.add(part);ready=loaded.size===3;render();
+      loaded.add(part);updateReady();
     });
-    watch(query(ref(db,'s/'+accessKey+'/history'),limitToLast(20)),v=>{state.history=Object.entries(v||{}).sort((a,b)=>(b[1].at||0)-(a[1].at||0)||b[0].localeCompare(a[0])).map(([,h])=>h);render();});
-    // 読み込みエラーでgate()が呼ばれるまでは操作画面。書込はreadyで保護。
-    if(gen===generation){$('access-gate').hidden=true;document.querySelector('header').inert=false;document.querySelector('main').inert=false;}
-    $('device-label').textContent='端末：'+deviceName;
+    watch(query(ref(db,'s/'+key+'/history'),limitToLast(20)),v=>{state.history=Object.entries(v||{}).sort((a,b)=>(b[1].at||0)-(a[1].at||0)||b[0].localeCompare(a[0])).map(([,h])=>h);render();});
   }catch(e){stopSession();gate('接続設定を確認してください：'+e.message);}
 }
 function sendPatch(label,patch,before,{undo=false}={}){
@@ -129,13 +165,25 @@ function commit(label,fn){
   if(Object.keys(patch).length)sendPatch(label,patch,restore);
 }
 $('access-form').onsubmit=e=>{
-  e.preventDefault();const k=$('access-key').value.trim(),n=$('access-name').value.trim();
+  e.preventDefault();const k=$('access-key').value.trim(),n=$('access-name').value;
   if(!k||/[.#$\[\]\/\u0000-\u001f\u007f]/.test(k)||new TextEncoder().encode(k).length>768){$('access-error').textContent='合言葉に . # $ [ ] / や制御文字は使えません。長さも確認してください。';return;}
-  if(!n){$('access-error').textContent='端末名を入力してください';return;}
-  accessKey=k;deviceName=n;prefSet('key',k);prefSet('name',n);connect();
+  const invalid=nameError(n);if(invalid){$('access-error').textContent=invalid;return;}
+  accessKey=k;prefSet('key',k);connect(n);
 };
-$('change-key').onclick=()=>{if(pendingWrites){$('save-status').textContent='送信完了後に合言葉を変更してください';return;}stopSession();accessKey='';prefSet('key','');gate();};
-$('rename').onclick=()=>{const n=prompt('端末名（40文字以内）',deviceName);if(n&&n.trim()){deviceName=n.trim().slice(0,40);prefSet('name',deviceName);$('device-label').textContent='端末：'+deviceName;}};
+$('change-key').onclick=()=>{if(pendingWrites||nameBusy){$('save-status').textContent='送信完了後に合言葉を変更してください';return;}stopSession();accessKey='';prefSet('key','');gate();};
+$('rename').onclick=async()=>{
+  if(nameBusy||!ready||!connected){$('save-status').textContent='接続・確認完了後にお名前を変更してください';return;}
+  const n=prompt('お名前（自由入力・20文字以内）',deviceName);if(n===null)return;
+  const invalid=nameError(n);if(invalid){alert(invalid);return;}
+  const key=accessKey,old=deviceName,gen=generation;nameBusy=true;
+  try{
+    if(!await claimName(key,n)){if(gen===generation)alert(NAME_TAKEN);return;}
+    if(gen!==generation)return;
+    deviceName=n;prefSet('name',n);$('device-label').textContent='端末：'+deviceName;
+    if(nameKey(old)!==nameKey(n))await runTransaction(nameRef(key,old),current=>current?.deviceId===deviceId?null:undefined,{applyLocally:false});
+  }catch(e){if(gen===generation)permissionError(e);}
+  finally{nameBusy=false;refreshCurrentName();}
+};
 function classify(p){const v=VEHICLES.find(v=>v.reg===p.reg),r=RESERVATIONS.find(r=>r.reg===p.reg);if(!r)return {kind:'unknown',v,r,soon:false};const mins=t=>{const [h,m]=t.split(':').map(Number);return h*60+m;};const delta=mins(r.time)-mins(state.clock);return {kind:r.day,v,r,soon:r.day==='today'&&r.status==='予約'&&delta>=0&&delta<=CONFIG.soonMinutes};}
 function collision(p){return Object.values(state.placements).some(q=>q!==p&&q.digits===p.digits&&p.reg&&q.reg&&q.reg!==p.reg);}
 function tile(s){const p=state.placements[s.id],plan=state.plans[s.id]||'—';let inside=overview?'':'<span class="empty">＋ 4桁入力</span>',cls='tile';if(p){const x=classify(p);cls+=' '+x.kind+(x.soon?' soon':'')+(collision(p)?' collision':'');inside='<span class="identity"><b class="tag '+x.kind+'">'+CONFIG[x.kind].label+'</b><strong class="number">'+esc(p.digits)+'</strong></span>'+(x.r?.equipment?'<span class="equip" title="装備あり">◆</span>':'')+'<span class="sub">'+(x.r?esc(x.r.flight)+' · '+x.r.time:'予定未確認')+(x.r&&state.plans[s.id]&&x.r.flight!==state.plans[s.id]?' <b title="配置指示と異なる">≠</b>':'')+'</span>'+(x.r&&x.r.status!=='予約'?'<span class="sub muted">出発済み？（'+x.r.status+'）</span>':'')+(p.flag==='unresolved'?'<span class="warn">要選択</span>':'')+(p.flag==='outside'?'<span class="sub">候補なし（保有外の可能性）</span>':'')+(x.v?.outside?'<span class="sub">保有外の候補</span>':'')+(collision(p)?'<span class="warn">取り違え注意：同じ4桁</span>':'');}
@@ -301,7 +349,7 @@ body:not(.overview) .overview-help{display:none}
 <form id="access-form" style="max-width:440px;margin:6vh auto;background:white;padding:24px;border-radius:8px">
 <h2 id="gate-title">同期試作に参加</h2><p>同じ合言葉の端末で配置を共有します。</p>
 <p><label>合言葉 <input id="access-key" type="password" autocomplete="off" required style="width:100%;min-height:44px"></label></p>
-<p><label>端末名（例：スマホA）<input id="access-name" maxlength="40" autocomplete="off" required style="width:100%;min-height:44px"></label></p>
+<p><label>お名前（自由入力）<input id="access-name" maxlength="20" autocomplete="off" required style="width:100%;min-height:44px"></label></p>
 <p id="access-error" class="danger" role="alert"></p><button type="submit" class="primary">接続する</button>
 <p class="help">合言葉・端末ID・端末名のみをこのブラウザに保存します。模擬時刻はこのページ内のみ。切断中の未送信操作はページを閉じると失われます。</p>
 </form></section>
