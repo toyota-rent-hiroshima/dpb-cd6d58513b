@@ -51,6 +51,8 @@ function prefGet(k){try{return localStorage.getItem(PREF+k)||'';}catch{return ''
 function prefSet(k,v){try{if(v)localStorage.setItem(PREF+k,v);else localStorage.removeItem(PREF+k);}catch{$('access-error').textContent='ブラウザに設定を保存できません。このページ内だけで使用します。';}}
 // 表示の選択だけ保存。既定は従来のエリア別（PCでは従来の全エリア）。
 let overview=prefGet('view')==='overview';
+// 元の位置を記録し、エリア別へ戻したら従来の順序・開閉状態を復元する。
+const viewExtras=Array.from(document.querySelectorAll('header > .eyebrow,header h1,header > .notice:not(#connection),.view-switch .overview-help,header > .tools,#last-received,header > details:not(#overview-extras),header > .legend')).map(node=>{const marker=document.createComment('area-view-position');node.before(marker);return {node,marker};});
 function fitOverview(){
   const map=$('map'),frame=$('map-frame');
   if(!overview){map.style.transform='';frame.style.height='';return;}
@@ -60,6 +62,8 @@ function fitOverview(){
   frame.style.height=Math.ceil(map.offsetHeight*scale)+'px';
 }
 function applyView(){
+  for(const {node,marker} of viewExtras)if(overview)$('overview-extras-body').append(node);else marker.after(node);
+  $('overview-extras').hidden=!overview;$('overview-extras').open=false;
   document.body.classList.toggle('overview',overview);
   $('view-overview').setAttribute('aria-pressed',String(overview));
   $('view-areas').setAttribute('aria-pressed',String(!overview));
@@ -81,7 +85,7 @@ function gate(message=''){
   $('access-key').value=accessKey;$('access-name').value=deviceName;$('access-error').textContent=message;
 }
 function stopSession(){generation++;unwatchName();unwatchName=()=>{};for(const off of unsubscribers)off();unsubscribers=[];root=null;ready=false;connected=false;previousPlacements=null;sourceData=null;dataLoaded=false;state.placements={};state.work={};state.plans={};state.history=[];state.undo=null;measurements=[];$('measurements').innerHTML='<li>まだありません</li>';$('last-received').textContent='最終受信：まだありません';render();connectionStatus();}
-function permissionError(e){if(/permission.?denied/i.test(e.code||e.message||'')){stopSession();accessKey='';prefSet('key','');gate('パスワードが違います');}else $('save-status').textContent='同期エラー：'+(e.code||e.message);}
+function permissionError(e){if(/permission.?denied/i.test(e.code||e.message||'')){stopSession();accessKey='';prefSet('key','');gate('店舗共通パスワードが違います');}else $('save-status').textContent='同期エラー：'+(e.code||e.message);}
 function connectionStatus(){$('connection').textContent=connected?'接続中':'切断中（再接続待ち・入力は後で送信）／表示中のデータは最新でない可能性';}
 function stamped(p){if(!/^[0-9]{4}$/.test(p.digits))throw new Error('数字4桁を入力してください');return {digits:p.digits,reg:p.reg??null,flag:p.flag??null,by:deviceId,byName:deviceName,at:serverTimestamp()};}
 function receivePlacements(next){
@@ -131,7 +135,7 @@ function renderAdmin(names){
 $('admin-form').onsubmit=async e=>{
   e.preventDefault();const key=$('admin-store').value.trim(),pw=$('admin-password').value;const gen=++adminGeneration;
   $('admin-error').textContent='';
-  if(!key||/[.#$\[\]\/\u0000-\u001f\u007f]/.test(key)||new TextEncoder().encode(key).length>768){$('admin-error').textContent='店舗パスワードを確認してください';return;}
+  if(!key||/[.#$\[\]\/\u0000-\u001f\u007f]/.test(key)||new TextEncoder().encode(key).length>768){$('admin-error').textContent='店舗共通パスワードを確認してください';return;}
   if(!/^[!-~]{8,32}$/.test(pw)||/[.#$\[\]\/]/.test(pw)){$('admin-error').textContent='管理者パスワードは半角8〜32文字で入力してください（. # $ [ ] / と空白は使えません）';return;}
   $('admin-password').value='';
   adminOff();adminOff=()=>{};adminPassword='';adminKey='';
@@ -270,11 +274,11 @@ function commit(label,fn){
 }
 $('access-form').onsubmit=e=>{
   e.preventDefault();const k=$('access-key').value.trim(),n=$('access-name').value;
-  if(!k||/[.#$\[\]\/\u0000-\u001f\u007f]/.test(k)||new TextEncoder().encode(k).length>768){$('access-error').textContent='パスワードに . # $ [ ] / や制御文字は使えません。長さも確認してください。';return;}
+  if(!k||/[.#$\[\]\/\u0000-\u001f\u007f]/.test(k)||new TextEncoder().encode(k).length>768){$('access-error').textContent='店舗共通パスワードに . # $ [ ] / や制御文字は使えません。長さも確認してください。';return;}
   const invalid=nameError(n);if(invalid){$('access-error').textContent=invalid;return;}
   accessKey=k;prefSet('key',k);connect(n);
 };
-$('change-key').onclick=()=>{if(pendingWrites||nameBusy){$('save-status').textContent='送信完了後にパスワードを変更してください';return;}stopSession();accessKey='';prefSet('key','');gate();};
+$('logout').onclick=()=>{if(pendingWrites||nameBusy){$('save-status').textContent='送信完了後にログアウトしてください';return;}if(!confirm('この端末からログアウトし、保存した店舗共通パスワードを忘れさせますか？再び利用するにはQRコードまたは店舗共通パスワードが必要です。'))return;stopSession();accessKey='';prefSet('key','');gate();};
 $('rename').onclick=async()=>{
   if(nameBusy||!ready||!connected){$('save-status').textContent='接続・確認完了後にスタッフ名を変更してください';return;}
   const n=prompt('スタッフ名（例：佐藤）・20文字以内',deviceName);if(n===null)return;
@@ -456,6 +460,9 @@ body:not(.overview) .overview-help{display:none}
 .overview .area{display:block}
 .overview .tile:empty{cursor:default}
 #data-warning{background:#e2e5e9;color:#182733;border:2px solid #52616e;padding:12px 16px;margin:12px 0;font-size:16px;font-weight:800}
+.device-session{margin:28px 0 4px}#logout{font-size:11px;color:#60707e;background:transparent;border-color:transparent;text-decoration:underline;padding:4px;max-width:100%;text-align:left}
+.overview header{padding:8px 12px}.overview .topline{font-size:12px}.overview .view-switch{margin:6px 0;gap:6px}.overview #connection{font-size:12px;margin:6px 0;padding:5px 8px}.overview #data-warning{font-size:13px;margin:6px 0;padding:6px 8px}.overview main{padding-top:7px}
+#overview-extras > summary{cursor:pointer;min-height:32px;padding:6px 0;font-size:12px;color:#526878}#overview-extras-body{padding:8px 0}#overview-extras-body h1{font-size:18px}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -465,14 +472,15 @@ body:not(.overview) .overview-help{display:none}
 <div class="topline"><h1>出発準備ダッシュボード｜同期試作</h1><span class="stamp" id="data-stamp"></span></div><div id="data-warning" role="alert" hidden></div>
 <div class="notice">送信完了前はこのページを閉じないでください。</div>
 <nav class="view-switch" aria-label="表示切替"><button id="view-overview" aria-pressed="false">全体図</button><button id="view-areas" aria-pressed="true">エリア別</button><p class="overview-help">閲覧専用：ピンチで拡大・指で移動。入力はエリア別表示で行います</p></nav>
-<div class="tools"><button id="undo">直前操作を元に戻す</button><button id="erase">全消去</button><button id="rename">スタッフ名を変更</button><button id="change-key">パスワードを変更</button><b id="device-label"></b><span id="save-status" role="status"></span></div>
+<div class="tools"><button id="undo">直前操作を元に戻す</button><button id="erase">全消去</button><button id="rename">スタッフ名を変更</button><b id="device-label"></b><span id="save-status" role="status"></span></div>
 <div class="notice" id="connection" role="status">切断中（再接続待ち・入力は後で送信）</div><p id="last-received" role="status">最終受信：まだありません</p><details><summary>同期の実測</summary><p class="help">他端末の配置更新のサーバー確定時刻から受信まで（推定）。初回一覧は除外。クリアは時刻情報が消えるため計測対象外。負値は時刻推定の誤差です。</p><ol id="measurements"><li>まだありません</li></ol></details><div class="legend"><span><b class="tag today">今</b> 今日出発</span><span><b class="tag tomorrow">明</b> 明日出発</span><span><i class="redsample"></i> 1時間以内</span><span>灰色＝予定未確認</span><span>◆＝装備あり</span><span class="danger">赤文字＝取り違え注意・要選択</span><span>≠＝配置指示と異なる</span></div>
+<details id="overview-extras" hidden><summary>その他の操作・説明</summary><div id="overview-extras-body"></div></details>
 </header>
 <main>
 <p id="data-empty" class="muted" role="status">司令塔がまだデータを送っていません</p>
 <nav class="tabs" aria-label="エリア切替" id="tabs"></nav>
 <div id="map-frame"><div class="map" id="map"></div></div>
-<footer><p class="help"><span class="area-help">空き枠を押す → 4桁入力。車両のある枠を押す → 詳細・変更・クリア。長押しでも詳細。</span><span class="overview-help">全体図は閲覧専用です。車両のある枠を押すと詳細を確認できます。入力はエリア別表示で行います。</span>配置指示はExcel側の読み取り表示です。出発予定は司令塔から受信したデータを表示します。</p><details class="history" open><summary>操作履歴（共有・直近20件）</summary><ol id="history"></ol></details></footer>
+<footer><p class="help"><span class="area-help">空き枠を押す → 4桁入力。車両のある枠を押す → 詳細・変更・クリア。長押しでも詳細。</span><span class="overview-help">全体図は閲覧専用です。車両のある枠を押すと詳細を確認できます。入力はエリア別表示で行います。</span>配置指示はExcel側の読み取り表示です。出発予定は司令塔から受信したデータを表示します。</p><details class="history" open><summary>操作履歴（共有・直近20件）</summary><ol id="history"></ol></details><p class="device-session"><button id="logout" type="button">この端末からログアウト（店舗共通パスワードを忘れさせる）</button></p></footer>
 </main>
 <dialog id="editor" aria-labelledby="edit-title"><div class="dialog-top"><h2 id="edit-title">4桁入力</h2><button class="close" data-close="editor" aria-label="入力を閉じる">×</button></div><p id="edit-place" class="muted"></p><label for="digits">車番の下4桁（先頭の0も入力）</label><input id="digits" class="number-input" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" placeholder="0000"><div id="input-error" class="danger" role="alert"></div><div class="keys" id="keys"></div><div class="actions"><button id="submit" class="primary full">この4桁で確定</button></div></dialog>
 <dialog id="picker" aria-labelledby="pick-title"><div class="dialog-top"><h2 id="pick-title">車両を選んでください</h2><button class="close" data-close="picker" aria-label="候補選択を閉じる">×</button></div><p>4桁が同じ車両が複数あります。フル車番を確認してください。</p><div id="candidates"></div><button id="unresolved" class="full">未選択のまま置く（要選択）</button></dialog>
@@ -480,19 +488,19 @@ body:not(.overview) .overview-help{display:none}
 <dialog id="detail" aria-labelledby="detail-title"><div class="dialog-top"><h2 id="detail-title">車両の詳細</h2><button class="close" data-close="detail" aria-label="詳細を閉じる">×</button></div><div id="detail-body"></div><p id="detail-readonly" class="help" hidden>入力はエリア別表示で行います</p><div class="actions"><button id="change" class="primary">4桁を入力・変更</button><button id="resolve">候補を選ぶ</button><button id="clear">この枠をクリア</button></div></dialog>
 <section id="access-gate" style="position:fixed;inset:0;z-index:100;background:#eef2f5;overflow:auto;padding:30px 16px" aria-labelledby="gate-title">
 <form id="access-form" style="max-width:440px;margin:6vh auto;background:white;padding:24px;border-radius:8px">
-<h2 id="gate-title">同期試作に参加</h2><p>同じパスワードの端末で配置を共有します。</p>
-<p><label>パスワード <input id="access-key" type="password" autocomplete="off" required style="width:100%;min-height:44px"></label></p>
+<h2 id="gate-title">同期試作に参加</h2><p>同じ店舗共通パスワードの端末で配置を共有します。</p>
+<p><label>店舗共通パスワード <input id="access-key" type="password" autocomplete="off" aria-describedby="access-key-help" required style="width:100%;min-height:44px"></label></p><p id="access-key-help" class="help">店舗のスタッフ全員で共通です（個人のパスワードではありません）。通常はQRコードで入るため入力不要です</p>
 <p><label>スタッフ名（例：佐藤）<input id="access-name" maxlength="20" autocomplete="off" required style="width:100%;min-height:44px"></label></p>
 <p id="access-error" class="danger" role="alert"></p><button type="submit" class="primary">接続する</button> <button id="admin-open" type="button">管理者</button>
 <p id="name-retention-help" class="help">スタッフ名の登録は30日使われないと解放され、利用中の端末が掃除します。操作履歴は7日を過ぎると、利用中の端末が削除します。配置中の車両には入力したスタッフ名が、その枠が空くまで残ります</p>
-<p class="help">パスワード・端末ID・スタッフ名のみをこのブラウザに保存します。切断中の未送信操作はページを閉じると失われます。</p>
+<p class="help">店舗共通パスワード・端末ID・スタッフ名のみをこのブラウザに保存します。切断中の未送信操作はページを閉じると失われます。</p>
 </form></section>
 
 <section id="admin-gate" hidden style="position:fixed;inset:0;z-index:110;background:#eef2f5;overflow:auto;padding:24px 16px" aria-labelledby="admin-title">
 <div style="max-width:1100px;margin:4vh auto;background:white;padding:24px;border-radius:8px">
 <h2 id="admin-title">管理者画面</h2>
 <form id="admin-form" autocomplete="off" style="max-width:440px">
-<p><label>店舗パスワード<input id="admin-store" type="password" autocomplete="off" required style="display:block;width:100%;min-height:44px"></label></p>
+<p><label>店舗共通パスワード<input id="admin-store" type="password" autocomplete="off" required style="display:block;width:100%;min-height:44px"></label></p>
 <p><label>管理者パスワード（半角8〜32文字）<input id="admin-password" type="password" minlength="8" maxlength="32" autocomplete="off" required style="display:block;width:100%;min-height:44px"></label></p>
 <button type="submit" class="primary">管理者として接続</button>
 </form>
