@@ -8,7 +8,7 @@
 <title>出発準備ダッシュボード｜同期試作</title>
 <script type="module">
 'use strict';
-// 親作業でURLだけ置換。合言葉は公開ファイルに書かない。
+// 接続先URL。管理者パスワードは公開ファイルに書かず、ルールだけで検証する。
 const DB_URL='https://departure-board-test-default-rtdb.asia-southeast1.firebasedatabase.app';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getDatabase, ref, onValue, update, push, query, limitToLast, serverTimestamp, runTransaction } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js';
@@ -66,8 +66,8 @@ function gate(message=''){
   closeAll();$('access-gate').hidden=false;document.querySelector('header').inert=true;document.querySelector('main').inert=true;
   $('access-key').value=accessKey;$('access-name').value=deviceName;$('access-error').textContent=message;
 }
-function stopSession(){generation++;for(const off of unsubscribers)off();unsubscribers=[];root=null;ready=false;connected=false;previousPlacements=null;state.placements={};state.work={};state.plans={};state.history=[];state.undo=null;measurements=[];$('measurements').innerHTML='<li>まだありません</li>';$('last-received').textContent='最終受信：まだありません';render();connectionStatus();}
-function permissionError(e){if(/permission.?denied/i.test(e.code||e.message||'')){stopSession();accessKey='';prefSet('key','');gate('合言葉が違います');}else $('save-status').textContent='同期エラー：'+(e.code||e.message);}
+function stopSession(){generation++;unwatchName();unwatchName=()=>{};for(const off of unsubscribers)off();unsubscribers=[];root=null;ready=false;connected=false;previousPlacements=null;state.placements={};state.work={};state.plans={};state.history=[];state.undo=null;measurements=[];$('measurements').innerHTML='<li>まだありません</li>';$('last-received').textContent='最終受信：まだありません';render();connectionStatus();}
+function permissionError(e){if(/permission.?denied/i.test(e.code||e.message||'')){stopSession();accessKey='';prefSet('key','');gate('パスワードが違います');}else $('save-status').textContent='同期エラー：'+(e.code||e.message);}
 function connectionStatus(){$('connection').textContent=connected?'接続中':'切断中（再接続待ち・入力は後で送信）';}
 function stamped(p){if(!/^[0-9]{4}$/.test(p.digits))throw new Error('数字4桁を入力してください');return {digits:p.digits,reg:p.reg??null,flag:p.flag??null,by:deviceId,byName:deviceName,at:serverTimestamp()};}
 function receivePlacements(next){
@@ -83,7 +83,61 @@ function receivePlacements(next){
 }
 const NAME_TAKEN='このスタッフ名は別の端末で使われています。別のスタッフ名を入力してください（例：佐藤A、佐藤Y）';
 const NAME_TTL=7*24*60*60*1000;
-let nameBusy=false, refreshCurrentName=()=>{};
+let nameBusy=false, refreshCurrentName=()=>{}, unwatchName=()=>{};
+const NAME_REMOVED='管理者によりスタッフ名が削除されました。スタッフ名を入力してください';
+function removedName(){stopSession();deviceName='';prefSet('name','');gate(NAME_REMOVED);$('access-name').focus();}
+function watchOwnName(key,name,gen){
+  unwatchName();
+  unwatchName=onValue(nameRef(key,name),snap=>{
+    if(gen!==generation)return;
+    const v=snap.val();if(!v||v.deviceId!==deviceId||v.released===true)removedName();
+  },e=>{if(gen===generation)permissionError(e);});
+}
+// 管理者資格情報はこのページのメモリー内だけ。閉じる・離脱時に破棄する。
+let adminPassword='',adminKey='',adminOff=()=>{},adminGeneration=0;
+function closeAdmin(){adminGeneration++;adminOff();adminOff=()=>{};adminPassword='';adminKey='';$('admin-password').value='';$('admin-list').replaceChildren();$('admin-panel').hidden=true;$('admin-gate').hidden=true;gate();}
+$('admin-open').onclick=()=>{
+  stopSession();$('access-gate').hidden=true;$('admin-gate').hidden=false;$('admin-form').hidden=false;$('admin-panel').hidden=true;
+  $('admin-store').value=accessKey;$('admin-password').value='';$('admin-error').textContent='';$('admin-store').focus();
+};
+$('admin-close').onclick=closeAdmin;
+window.addEventListener('pagehide',closeAdmin);
+function renderAdmin(names){
+  const now=Date.now()+offset;
+  $('admin-list').innerHTML=Object.entries(names||{}).sort((a,b)=>(b[1].at||0)-(a[1].at||0)||a[0].localeCompare(b[0])).map(([key,n])=>{
+    const status=n.released===true?'解放済み（改名）':typeof n.at==='number'&&n.at<now-NAME_TTL?'7日超で解放済み扱い':'使用中';
+    const at=typeof n.at==='number'?new Date(n.at).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo',hour12:false})+' 日本時間（JST）':'未確認';
+    return '<tr><td>'+esc(n.name)+'</td><td>'+esc(n.deviceId)+'</td><td>'+esc(at)+'</td><td>'+status+'</td><td><button type="button" data-delete-name="'+esc(key)+'">強制削除</button></td></tr>';
+  }).join('');
+}
+$('admin-form').onsubmit=async e=>{
+  e.preventDefault();const key=$('admin-store').value.trim(),pw=$('admin-password').value;const gen=++adminGeneration;
+  $('admin-error').textContent='';
+  if(!key||/[.#$\[\]\/\u0000-\u001f\u007f]/.test(key)||new TextEncoder().encode(key).length>768){$('admin-error').textContent='店舗パスワードを確認してください';return;}
+  if(!/^[0-9]{6}$/.test(pw)){$('admin-error').textContent='管理者パスワードは6桁で入力してください';return;}
+  $('admin-password').value='';
+  adminOff();adminOff=()=>{};adminPassword='';adminKey='';
+  try{
+    if(!db)db=getDatabase(initializeApp({databaseURL:DB_URL}));
+    await update(ref(db,'s/'+key),{['adm/'+pw+'/check']:serverTimestamp()});
+    if(gen!==adminGeneration)return;
+    adminPassword=pw;adminKey=key;$('admin-form').hidden=true;$('admin-panel').hidden=false;
+    adminOff=onValue(ref(db,'s/'+key+'/names'),snap=>{if(gen===adminGeneration)renderAdmin(snap.val());},err=>{
+      if(gen!==adminGeneration)return;closeAdmin();$('access-error').textContent='管理者一覧を取得できません：'+(err.code||err.message);
+    });
+  }catch(err){if(gen===adminGeneration)$('admin-error').textContent=/permission.?denied/i.test(err.code||err.message||'')?'管理者パスワードが違います':'接続できません：'+(err.code||err.message);}
+};
+$('admin-list').onclick=async e=>{
+  const button=e.target.closest('[data-delete-name]');if(!button||!adminPassword)return;
+  if(!confirm('このスタッフ名を強制削除しますか？使用中の端末はスタッフ名の再入力が必要になります。'))return;
+  const gen=adminGeneration;button.disabled=true;$('admin-error').textContent='';
+  try{
+    const name=button.dataset.deleteName;
+    // 名前削除と今回だけ有効な証跡を同一の原子的な更新で送る。
+    await update(ref(db,'s/'+adminKey),{['names/'+name]:null,['adm/'+adminPassword+'/del/'+name]:serverTimestamp()});
+  }catch(err){if(gen===adminGeneration)$('admin-error').textContent='強制削除できません：'+(err.code||err.message);}
+  finally{if(button.isConnected)button.disabled=false;}
+};
 function normalizeName(name){return name.trim().normalize('NFKC').replace(/\s/gu,'').toLowerCase();}
 function nameKey(name){return encodeURIComponent(normalizeName(name)).replace(/\./g,'%2E');}
 function nameError(name){
@@ -93,10 +147,11 @@ function nameError(name){
   return '';
 }
 function nameRef(key,name){return ref(db,'s/'+key+'/names/'+nameKey(name));}
-async function claimName(key,name){
+async function claimName(key,name,refreshOnly=false){
   // 競合時の再実行でも、必ずサーバー推定時刻で判定。ローカル先行表示はしない。
   const result=await runTransaction(nameRef(key,name),current=>{
-    if(current&&current.deviceId!==deviceId&&!(typeof current.at==='number'&&Date.now()+offset-current.at>NAME_TTL))return;
+    if(refreshOnly&&(!current||current.deviceId!==deviceId||current.released===true))return;
+    if(current&&current.released!==true&&current.deviceId!==deviceId&&!(typeof current.at==='number'&&Date.now()+offset-current.at>NAME_TTL))return;
     return {deviceId,name,at:serverTimestamp()};
   },{applyLocally:false});
   return result.committed;
@@ -114,13 +169,14 @@ function connect(candidate=deviceName){
       if(!connected||!offsetReady||claiming||nameBusy||gen!==generation)return;
       // 改名後の再接続では、登録成功済みの現在名を更新する。
       if(nameConfirmed)candidate=deviceName;
-      claiming=true;nameConfirmed=false;updateReady();
+      const refreshOnly=nameConfirmed;claiming=true;nameConfirmed=false;updateReady();
       try{
-        const accepted=await claimName(key,candidate);
+        const accepted=await claimName(key,candidate,refreshOnly);
         if(gen!==generation)return;
+        if(!accepted&&refreshOnly){removedName();return;}
         if(!accepted){stopSession();gate(NAME_TAKEN);$('access-name').value=candidate;$('access-name').focus();return;}
-        deviceName=candidate;prefSet('name',deviceName);nameConfirmed=true;updateReady();
-        $('device-label').textContent='端末：'+deviceName;
+        deviceName=candidate;prefSet('name',deviceName);nameConfirmed=true;watchOwnName(key,candidate,gen);updateReady();
+        $('device-label').textContent='スタッフ：'+deviceName;
         $('access-gate').hidden=true;document.querySelector('header').inert=false;document.querySelector('main').inert=false;
       }catch(e){if(gen===generation){permissionError(e);if(!/permission.?denied/i.test(e.code||e.message||'')){stopSession();gate('同期エラー：'+(e.code||e.message));$('access-name').value=candidate;}}}
       finally{claiming=false;}
@@ -166,11 +222,11 @@ function commit(label,fn){
 }
 $('access-form').onsubmit=e=>{
   e.preventDefault();const k=$('access-key').value.trim(),n=$('access-name').value;
-  if(!k||/[.#$\[\]\/\u0000-\u001f\u007f]/.test(k)||new TextEncoder().encode(k).length>768){$('access-error').textContent='合言葉に . # $ [ ] / や制御文字は使えません。長さも確認してください。';return;}
+  if(!k||/[.#$\[\]\/\u0000-\u001f\u007f]/.test(k)||new TextEncoder().encode(k).length>768){$('access-error').textContent='パスワードに . # $ [ ] / や制御文字は使えません。長さも確認してください。';return;}
   const invalid=nameError(n);if(invalid){$('access-error').textContent=invalid;return;}
   accessKey=k;prefSet('key',k);connect(n);
 };
-$('change-key').onclick=()=>{if(pendingWrites||nameBusy){$('save-status').textContent='送信完了後に合言葉を変更してください';return;}stopSession();accessKey='';prefSet('key','');gate();};
+$('change-key').onclick=()=>{if(pendingWrites||nameBusy){$('save-status').textContent='送信完了後にパスワードを変更してください';return;}stopSession();accessKey='';prefSet('key','');gate();};
 $('rename').onclick=async()=>{
   if(nameBusy||!ready||!connected){$('save-status').textContent='接続・確認完了後にスタッフ名を変更してください';return;}
   const n=prompt('スタッフ名（例：佐藤）・20文字以内',deviceName);if(n===null)return;
@@ -179,8 +235,9 @@ $('rename').onclick=async()=>{
   try{
     if(!await claimName(key,n)){if(gen===generation)alert(NAME_TAKEN);return;}
     if(gen!==generation)return;
-    deviceName=n;prefSet('name',n);$('device-label').textContent='端末：'+deviceName;
-    if(nameKey(old)!==nameKey(n))await runTransaction(nameRef(key,old),current=>current?.deviceId===deviceId?null:undefined,{applyLocally:false});
+    deviceName=n;prefSet('name',n);$('device-label').textContent='スタッフ：'+deviceName;
+    watchOwnName(key,n,gen);
+    if(nameKey(old)!==nameKey(n))await runTransaction(nameRef(key,old),current=>current?.deviceId===deviceId?{...current,released:true}:undefined,{applyLocally:false});
   }catch(e){if(gen===generation)permissionError(e);}
   finally{nameBusy=false;refreshCurrentName();}
 };
@@ -333,7 +390,7 @@ body:not(.overview) .overview-help{display:none}
 <div class="topline"><h1>出発準備ダッシュボード｜同期試作</h1><span class="stamp">13時のデータ（模擬）</span></div>
 <div class="notice">同期の実験用・ダミーデータ専用。送信完了前はこのページを閉じないでください。</div>
 <nav class="view-switch" aria-label="表示切替"><button id="view-overview" aria-pressed="false">全体図</button><button id="view-areas" aria-pressed="true">エリア別</button><p class="overview-help">閲覧専用：ピンチで拡大・指で移動。入力はエリア別表示で行います</p></nav>
-<div class="tools"><label>模擬の現在時刻 <select id="clock"><option>9:00</option><option selected>13:00</option><option>17:30</option></select></label><span>今日＝模擬1日目 / 明日＝模擬2日目</span><button id="undo">直前操作を元に戻す</button><button id="reset">ダミー初期データを入れる</button><button id="erase">全消去</button><button id="rename">端末名を変更</button><button id="change-key">合言葉を変更</button><b id="device-label"></b><span id="save-status" role="status"></span></div>
+<div class="tools"><label>模擬の現在時刻 <select id="clock"><option>9:00</option><option selected>13:00</option><option>17:30</option></select></label><span>今日＝模擬1日目 / 明日＝模擬2日目</span><button id="undo">直前操作を元に戻す</button><button id="reset">ダミー初期データを入れる</button><button id="erase">全消去</button><button id="rename">スタッフ名を変更</button><button id="change-key">パスワードを変更</button><b id="device-label"></b><span id="save-status" role="status"></span></div>
 <div class="notice" id="connection" role="status">切断中（再接続待ち・入力は後で送信）</div><p id="last-received" role="status">最終受信：まだありません</p><details><summary>同期の実測</summary><p class="help">他端末の配置更新のサーバー確定時刻から受信まで（推定）。初回一覧は除外。クリアは時刻情報が消えるため計測対象外。負値は時刻推定の誤差です。</p><ol id="measurements"><li>まだありません</li></ol></details><div class="legend"><span><b class="tag today">今</b> 今日出発</span><span><b class="tag tomorrow">明</b> 明日出発</span><span><i class="redsample"></i> 1時間以内</span><span>灰色＝予定未確認</span><span>◆＝装備あり</span><span class="danger">赤文字＝取り違え注意・要選択</span><span>≠＝配置指示と異なる</span></div>
 </header>
 <main>
@@ -347,12 +404,25 @@ body:not(.overview) .overview-help{display:none}
 <dialog id="detail" aria-labelledby="detail-title"><div class="dialog-top"><h2 id="detail-title">車両の詳細</h2><button class="close" data-close="detail" aria-label="詳細を閉じる">×</button></div><div id="detail-body"></div><p id="detail-readonly" class="help" hidden>入力はエリア別表示で行います</p><div class="actions"><button id="change" class="primary">4桁を入力・変更</button><button id="resolve">候補を選ぶ</button><button id="clear">この枠をクリア</button></div></dialog>
 <section id="access-gate" style="position:fixed;inset:0;z-index:100;background:#eef2f5;overflow:auto;padding:30px 16px" aria-labelledby="gate-title">
 <form id="access-form" style="max-width:440px;margin:6vh auto;background:white;padding:24px;border-radius:8px">
-<h2 id="gate-title">同期試作に参加</h2><p>同じ合言葉の端末で配置を共有します。</p>
-<p><label>合言葉 <input id="access-key" type="password" autocomplete="off" required style="width:100%;min-height:44px"></label></p>
+<h2 id="gate-title">同期試作に参加</h2><p>同じパスワードの端末で配置を共有します。</p>
+<p><label>パスワード <input id="access-key" type="password" autocomplete="off" required style="width:100%;min-height:44px"></label><small>デモ版のパスワードは 1234 です</small></p>
 <p><label>スタッフ名（例：佐藤）<input id="access-name" maxlength="20" autocomplete="off" required style="width:100%;min-height:44px"></label></p>
-<p id="access-error" class="danger" role="alert"></p><button type="submit" class="primary">接続する</button>
-<p class="help">合言葉・端末ID・端末名のみをこのブラウザに保存します。模擬時刻はこのページ内のみ。切断中の未送信操作はページを閉じると失われます。</p>
+<p id="access-error" class="danger" role="alert"></p><button type="submit" class="primary">接続する</button> <button id="admin-open" type="button">管理者</button>
+<p class="help">パスワード・端末ID・スタッフ名のみをこのブラウザに保存します。模擬時刻はこのページ内のみ。切断中の未送信操作はページを閉じると失われます。</p>
 </form></section>
 
+<section id="admin-gate" hidden style="position:fixed;inset:0;z-index:110;background:#eef2f5;overflow:auto;padding:24px 16px" aria-labelledby="admin-title">
+<div style="max-width:1100px;margin:4vh auto;background:white;padding:24px;border-radius:8px">
+<h2 id="admin-title">管理者画面</h2>
+<form id="admin-form" autocomplete="off" style="max-width:440px">
+<p><label>店舗パスワード<input id="admin-store" type="password" autocomplete="off" required style="display:block;width:100%;min-height:44px"></label></p>
+<p><label>管理者パスワード（6桁）<input id="admin-password" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="off" required style="display:block;width:100%;min-height:44px"></label></p>
+<button type="submit" class="primary">管理者として接続</button>
+</form>
+<p id="admin-error" class="danger" role="alert"></p>
+<div id="admin-panel" hidden><p>最終利用日時の新しい順／日本時間。7日を超えた登録と改名で解放した登録は再利用できます。</p>
+<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;text-align:left"><thead><tr><th>スタッフ名</th><th>識別子（deviceId）</th><th>最終利用日時（日本時間）</th><th>状態</th><th>操作</th></tr></thead><tbody id="admin-list"></tbody></table></div></div>
+<p><button id="admin-close" type="button">管理者画面を閉じる</button></p>
+</div></section>
 </body>
 </html>
