@@ -132,7 +132,7 @@ $('admin-form').onsubmit=async e=>{
   e.preventDefault();const key=$('admin-store').value.trim(),pw=$('admin-password').value;const gen=++adminGeneration;
   $('admin-error').textContent='';
   if(!key||/[.#$\[\]\/\u0000-\u001f\u007f]/.test(key)||new TextEncoder().encode(key).length>768){$('admin-error').textContent='店舗パスワードを確認してください';return;}
-  if(!/^[A-Za-z0-9]{8,32}$/.test(pw)){$('admin-error').textContent='管理者パスワードは英数字8〜32文字で入力してください';return;}
+  if(!/^[!-~]{8,32}$/.test(pw)||/[.#$\[\]\/]/.test(pw)){$('admin-error').textContent='管理者パスワードは半角8〜32文字で入力してください（. # $ [ ] / と空白は使えません）';return;}
   $('admin-password').value='';
   adminOff();adminOff=()=>{};adminPassword='';adminKey='';
   try{
@@ -493,7 +493,7 @@ body:not(.overview) .overview-help{display:none}
 <h2 id="admin-title">管理者画面</h2>
 <form id="admin-form" autocomplete="off" style="max-width:440px">
 <p><label>店舗パスワード<input id="admin-store" type="password" autocomplete="off" required style="display:block;width:100%;min-height:44px"></label></p>
-<p><label>管理者パスワード（英数字8〜32文字）<input id="admin-password" type="password" pattern="[A-Za-z0-9]{8,32}" minlength="8" maxlength="32" autocomplete="off" required style="display:block;width:100%;min-height:44px"></label></p>
+<p><label>管理者パスワード（半角8〜32文字）<input id="admin-password" type="password" minlength="8" maxlength="32" autocomplete="off" required style="display:block;width:100%;min-height:44px"></label></p>
 <button type="submit" class="primary">管理者として接続</button>
 </form>
 <p id="admin-error" class="danger" role="alert"></p>
