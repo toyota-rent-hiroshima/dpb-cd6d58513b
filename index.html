@@ -81,15 +81,15 @@ function receivePlacements(next){
   previousPlacements=clone(next);state.placements=next;
   $('measurements').innerHTML=measurements.length?measurements.map(m=>'<li>'+esc(m.time+' / '+m.place+' / '+m.digits+' / '+m.from+' / '+m.seconds+'秒')+'</li>').join(''):'<li>まだありません</li>';
 }
-const NAME_TAKEN='このお名前は別の端末で使われています。別のお名前を入力してください（例：名字＋名前の頭文字）';
+const NAME_TAKEN='このスタッフ名は別の端末で使われています。別のスタッフ名を入力してください（例：佐藤A、佐藤Y）';
 const NAME_TTL=7*24*60*60*1000;
 let nameBusy=false, refreshCurrentName=()=>{};
 function normalizeName(name){return name.trim().normalize('NFKC').replace(/\s/gu,'').toLowerCase();}
 function nameKey(name){return encodeURIComponent(normalizeName(name)).replace(/\./g,'%2E');}
 function nameError(name){
-  if(!normalizeName(name))return 'お名前を入力してください';
-  if(name.length>20)return 'お名前は20文字以内で入力してください';
-  try{nameKey(name);}catch{return 'お名前の文字を確認してください';}
+  if(!normalizeName(name))return 'スタッフ名を入力してください';
+  if(name.length>20)return 'スタッフ名は20文字以内で入力してください';
+  try{nameKey(name);}catch{return 'スタッフ名の文字を確認してください';}
   return '';
 }
 function nameRef(key,name){return ref(db,'s/'+key+'/names/'+nameKey(name));}
@@ -172,8 +172,8 @@ $('access-form').onsubmit=e=>{
 };
 $('change-key').onclick=()=>{if(pendingWrites||nameBusy){$('save-status').textContent='送信完了後に合言葉を変更してください';return;}stopSession();accessKey='';prefSet('key','');gate();};
 $('rename').onclick=async()=>{
-  if(nameBusy||!ready||!connected){$('save-status').textContent='接続・確認完了後にお名前を変更してください';return;}
-  const n=prompt('お名前（自由入力・20文字以内）',deviceName);if(n===null)return;
+  if(nameBusy||!ready||!connected){$('save-status').textContent='接続・確認完了後にスタッフ名を変更してください';return;}
+  const n=prompt('スタッフ名（例：佐藤）・20文字以内',deviceName);if(n===null)return;
   const invalid=nameError(n);if(invalid){alert(invalid);return;}
   const key=accessKey,old=deviceName,gen=generation;nameBusy=true;
   try{
@@ -349,7 +349,7 @@ body:not(.overview) .overview-help{display:none}
 <form id="access-form" style="max-width:440px;margin:6vh auto;background:white;padding:24px;border-radius:8px">
 <h2 id="gate-title">同期試作に参加</h2><p>同じ合言葉の端末で配置を共有します。</p>
 <p><label>合言葉 <input id="access-key" type="password" autocomplete="off" required style="width:100%;min-height:44px"></label></p>
-<p><label>お名前（自由入力）<input id="access-name" maxlength="20" autocomplete="off" required style="width:100%;min-height:44px"></label></p>
+<p><label>スタッフ名（例：佐藤）<input id="access-name" maxlength="20" autocomplete="off" required style="width:100%;min-height:44px"></label></p>
 <p id="access-error" class="danger" role="alert"></p><button type="submit" class="primary">接続する</button>
 <p class="help">合言葉・端末ID・端末名のみをこのブラウザに保存します。模擬時刻はこのページ内のみ。切断中の未送信操作はページを閉じると失われます。</p>
 </form></section>
