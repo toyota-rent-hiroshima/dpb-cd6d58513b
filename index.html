@@ -8,7 +8,7 @@
 <title>出発準備ダッシュボード｜同期試作</title>
 <script type="module">
 'use strict';
-// 接続先URL。管理者パスワードは公開ファイルに書かず、ルールだけで検証する。
+// 接続先URLは非秘密。管理者資格情報は公開HTMLに固定保存せず、操作時のDBパスにのみ使用。
 const DB_URL='https://departure-board-test-default-rtdb.asia-southeast1.firebasedatabase.app';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getDatabase, ref, onValue, update, push, query, limitToLast, serverTimestamp, runTransaction } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js';
@@ -18,18 +18,32 @@ const PREF='parking-sync-v1-';
 const $=id=>document.getElementById(id), clone=x=>JSON.parse(JSON.stringify(x)), esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 for(const k of ['today','tomorrow','unknown'])document.documentElement.style.setProperty('--'+k,CONFIG[k].color);
 document.documentElement.style.setProperty('--danger',CONFIG.danger);
-// 登録Noは試作用の固有ID。実データ・顧客名・予約番号は一切使用しません。
-const VEHICLES=Array.from({length:50},(_,i)=>({reg:'DUMMY-VEH-'+String(i+1).padStart(3,'0'),digits:i===0?'0007':i===1||i===2?'1234':i===3||i===4?'5678':String(8100+i),name:'模擬車両'+String(i+1).padStart(2,'0'),full:(i===2?'架空県外': '架空広島')+' '+(500+i)+'わ'+(i===0?'0007':i===1||i===2?'1234':i===3||i===4?'5678':String(8100+i)),class:['C1','C2','W1'][i%3],store:i===49?'模擬県外店（保有外）':'模擬空港店',outside:i===49}));
-const RESERVATIONS=Array.from({length:30},(_,i)=>({reg:VEHICLES[i].reg,day:i%3===1?'tomorrow':'today',time:['13:30','09:00','14:00','17:45','12:30','18:00'][i%6],flight:i%5===4?'1230?':'DUM'+(101+i),equipment:i%7===0?'C2 J1 B2':i%4===0?'C1':'',status:i===5?'貸渡':i===8?'精算':'予約',note:i%7===0?'装備の数量を確認（模擬）':'模擬データ'}));
 const SLOTS=[];
 function add(area,label){const id='W'+String(SLOTS.length+1).padStart(3,'0');SLOTS.push({id,area,label});}
 for(const n of ['F',...Array.from({length:15},(_,i)=>String(20+i))])for(const side of ['左','右'])add('wait',n+side);
 for(const n of ['⑮','⑭','⑬','⑫','⑪','⑩','①','⑨','⑧','⑦','⑥','⑤','④','③','②'])add('depart',n);
 for(const [area,count] of [['fuel',4],['wash',4],['vertical',8],['roof',2],['sub',8],['share',10]])for(let i=1;i<=count;i++)add(area,String(i));
 for(let i=9;i<=11;i++)add('sub',String(i));
-const PLANS=Object.fromEntries(SLOTS.filter(s=>s.area==='wait').map((s,i)=>[s.id,i<24?'DUM'+(101+i):'']));
-function seed(){const placements={};for(let i=0;i<24;i++)placements[SLOTS[i].id]={digits:VEHICLES[i].digits,reg:VEHICLES[i].reg};for(let i=0;i<6;i++)placements[SLOTS[32+i].id]={digits:VEHICLES[24+i].digits,reg:VEHICLES[24+i].reg};placements.W039={digits:VEHICLES[29].digits,reg:VEHICLES[29].reg};placements.W038={digits:VEHICLES[31].digits,reg:VEHICLES[31].reg};placements.W056={digits:VEHICLES[30].digits,reg:VEHICLES[30].reg};placements.W084={digits:VEHICLES[32].digits,reg:VEHICLES[32].reg};placements.W048={digits:'9999',reg:null,flag:'outside'};placements.W052={digits:'5678',reg:null,flag:'unresolved'};placements.W064={digits:VEHICLES[49].digits,reg:VEHICLES[49].reg};for(let i=0;i<10;i++)placements[SLOTS[73+i].id]={digits:VEHICLES[35+i].digits,reg:VEHICLES[35+i].reg};return {version:1,placements,work:Object.fromEntries(SLOTS.filter(s=>s.area==='share').map((s,i)=>[s.id,i%3])),history:[],undo:null,clock:'13:00'};}
-let state={placements:{},work:{},plans:{},history:[],undo:null,clock:'13:00'};
+let state={placements:{},work:{},plans:{},history:[],undo:null};
+let sourceData=null, dataLoaded=false;
+const serverNow=()=>Date.now()+offset;
+const canPlace=()=>dataLoaded&&!!sourceData?.vehicles&&Object.keys(sourceData.vehicles).length>0;
+function placementGate(){const blocked=!canPlace();$('submit').disabled=blocked;if(blocked)$('input-error').textContent='データ読込中のため確定できません';else if($('input-error').textContent==='データ読込中のため確定できません')$('input-error').textContent='';return !blocked;}
+// 受信端末が同じ候補集合で照合する。配置者・時刻は変更せず、競合時は最新配置を再評価。
+function reconcileOutside(){
+ if(!root||!connected||!canPlace())return;
+ const key=accessKey,gen=generation,data=sourceData,list=vehicles();
+ for(const [id,p] of Object.entries(state.placements))if(p?.flag==='outside'&&p.reg==null&&list.some(v=>v.digits===p.digits)){
+  runTransaction(ref(db,'s/'+key+'/placements/'+id),current=>{
+   if(gen!==generation||sourceData!==data||!current||current.flag!=='outside'||current.reg!=null)return;
+   const candidates=list.filter(v=>v.digits===current.digits);if(!candidates.length)return;
+   const next={...current};if(candidates.length===1){next.reg=candidates[0].reg;delete next.flag;}else{delete next.reg;next.flag='unresolved';}return next;
+  },{applyLocally:false}).catch(e=>{if(gen===generation)permissionError(e);});
+ }
+}
+const vehicles=()=>Object.entries(sourceData?.vehicles||{}).map(([reg,v])=>({...v,reg,digits:v.d4,class:v.cls}));
+const jstParts=(date=new Date(serverNow()))=>Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(date).map(p=>[p.type,p.value]));
+const dateKey=p=>p.year+'-'+p.month+'-'+p.day;
 let active='wait',selected=null,pending=null,confirmAction=null;
 const slot=id=>SLOTS.find(s=>s.id===id),locationName=id=>CONFIG.areas[slot(id).area][0]+' '+slot(id).label;
 // 配置・作業はSDKのメモリーキャッシュのみ。端末固有設定だけ永続化。
@@ -66,9 +80,9 @@ function gate(message=''){
   closeAll();$('access-gate').hidden=false;document.querySelector('header').inert=true;document.querySelector('main').inert=true;
   $('access-key').value=accessKey;$('access-name').value=deviceName;$('access-error').textContent=message;
 }
-function stopSession(){generation++;unwatchName();unwatchName=()=>{};for(const off of unsubscribers)off();unsubscribers=[];root=null;ready=false;connected=false;previousPlacements=null;state.placements={};state.work={};state.plans={};state.history=[];state.undo=null;measurements=[];$('measurements').innerHTML='<li>まだありません</li>';$('last-received').textContent='最終受信：まだありません';render();connectionStatus();}
+function stopSession(){generation++;unwatchName();unwatchName=()=>{};for(const off of unsubscribers)off();unsubscribers=[];root=null;ready=false;connected=false;previousPlacements=null;sourceData=null;dataLoaded=false;state.placements={};state.work={};state.plans={};state.history=[];state.undo=null;measurements=[];$('measurements').innerHTML='<li>まだありません</li>';$('last-received').textContent='最終受信：まだありません';render();connectionStatus();}
 function permissionError(e){if(/permission.?denied/i.test(e.code||e.message||'')){stopSession();accessKey='';prefSet('key','');gate('パスワードが違います');}else $('save-status').textContent='同期エラー：'+(e.code||e.message);}
-function connectionStatus(){$('connection').textContent=connected?'接続中':'切断中（再接続待ち・入力は後で送信）';}
+function connectionStatus(){$('connection').textContent=connected?'接続中':'切断中（再接続待ち・入力は後で送信）／表示中のデータは最新でない可能性';}
 function stamped(p){if(!/^[0-9]{4}$/.test(p.digits))throw new Error('数字4桁を入力してください');return {digits:p.digits,reg:p.reg??null,flag:p.flag??null,by:deviceId,byName:deviceName,at:serverTimestamp()};}
 function receivePlacements(next){
   if(previousPlacements&&offsetReady){for(const [id,p] of Object.entries(next)){
@@ -78,11 +92,14 @@ function receivePlacements(next){
     measurements.unshift(entry);measurements=measurements.slice(0,20);
     $('last-received').textContent='最終受信：'+entry.place+' '+entry.digits+' を '+entry.seconds+'秒で受信';
   }}
-  previousPlacements=clone(next);state.placements=next;
+  previousPlacements=clone(next);state.placements=next;reconcileOutside();
   $('measurements').innerHTML=measurements.length?measurements.map(m=>'<li>'+esc(m.time+' / '+m.place+' / '+m.digits+' / '+m.from+' / '+m.seconds+'秒')+'</li>').join(''):'<li>まだありません</li>';
 }
 const NAME_TAKEN='このスタッフ名は別の端末で使われています。別のスタッフ名を入力してください（例：佐藤A、佐藤Y）';
-const NAME_TTL=7*24*60*60*1000;
+let nameDays=30,staleHours=4;const DAY=86400000,HISTORY_TTL=7*DAY;
+function setStaleHours(v){staleHours=Number.isInteger(v)&&v>=1&&v<=24?v:4;$('stale-hours').value=String(staleHours);renderDataStamp();}
+const nameTTL=()=>nameDays*DAY;
+function setNameDays(v){nameDays=Number.isInteger(v)&&v>=1&&v<=365?v:30;const text='スタッフ名の登録は'+nameDays+'日使われないと解放され、利用中の端末が掃除します。操作履歴は7日を過ぎると、利用中の端末が削除します。配置中の車両には入力したスタッフ名が、その枠が空くまで残ります';for(const id of ['name-retention-help','admin-retention-help'])$(id).textContent=text;$('name-days').value=String(nameDays);}
 let nameBusy=false, refreshCurrentName=()=>{}, unwatchName=()=>{};
 const NAME_REMOVED='管理者によりスタッフ名が削除されました。スタッフ名を入力してください';
 function removedName(){stopSession();deviceName='';prefSet('name','');gate(NAME_REMOVED);$('access-name').focus();}
@@ -94,8 +111,8 @@ function watchOwnName(key,name,gen){
   },e=>{if(gen===generation)permissionError(e);});
 }
 // 管理者資格情報はこのページのメモリー内だけ。閉じる・離脱時に破棄する。
-let adminPassword='',adminKey='',adminOff=()=>{},adminGeneration=0;
-function closeAdmin(){adminGeneration++;adminOff();adminOff=()=>{};adminPassword='';adminKey='';$('admin-password').value='';$('admin-list').replaceChildren();$('admin-panel').hidden=true;$('admin-gate').hidden=true;gate();}
+let adminPassword='',adminKey='',adminOff=()=>{},adminSettingsOff=()=>{},adminTimeOff=()=>{},adminNames={},adminGeneration=0;
+function closeAdmin(){adminGeneration++;adminOff();adminSettingsOff();adminTimeOff();adminTimeOff=()=>{};adminSettingsOff=()=>{};adminOff=()=>{};adminPassword='';adminKey='';$('admin-password').value='';$('admin-list').replaceChildren();$('admin-panel').hidden=true;$('admin-gate').hidden=true;gate();}
 $('admin-open').onclick=()=>{
   stopSession();$('access-gate').hidden=true;$('admin-gate').hidden=false;$('admin-form').hidden=false;$('admin-panel').hidden=true;
   $('admin-store').value=accessKey;$('admin-password').value='';$('admin-error').textContent='';$('admin-store').focus();
@@ -103,9 +120,10 @@ $('admin-open').onclick=()=>{
 $('admin-close').onclick=closeAdmin;
 window.addEventListener('pagehide',closeAdmin);
 function renderAdmin(names){
+  adminNames=names;
   const now=Date.now()+offset;
   $('admin-list').innerHTML=Object.entries(names||{}).sort((a,b)=>(b[1].at||0)-(a[1].at||0)||a[0].localeCompare(b[0])).map(([key,n])=>{
-    const status=n.released===true?'解放済み（改名）':typeof n.at==='number'&&n.at<now-NAME_TTL?'7日超で解放済み扱い':'使用中';
+    const status=n.released===true?'解放済み（改名）':typeof n.at==='number'&&n.at<now-nameTTL()?nameDays+'日超で解放済み扱い':'使用中';
     const at=typeof n.at==='number'?new Date(n.at).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo',hour12:false})+' 日本時間（JST）':'未確認';
     return '<tr><td>'+esc(n.name)+'</td><td>'+esc(n.deviceId)+'</td><td>'+esc(at)+'</td><td>'+status+'</td><td><button type="button" data-delete-name="'+esc(key)+'">強制削除</button></td></tr>';
   }).join('');
@@ -114,14 +132,14 @@ $('admin-form').onsubmit=async e=>{
   e.preventDefault();const key=$('admin-store').value.trim(),pw=$('admin-password').value;const gen=++adminGeneration;
   $('admin-error').textContent='';
   if(!key||/[.#$\[\]\/\u0000-\u001f\u007f]/.test(key)||new TextEncoder().encode(key).length>768){$('admin-error').textContent='店舗パスワードを確認してください';return;}
-  if(!/^[0-9]{6}$/.test(pw)){$('admin-error').textContent='管理者パスワードは6桁で入力してください';return;}
+  if(!/^[A-Za-z0-9]{8,32}$/.test(pw)){$('admin-error').textContent='管理者パスワードは英数字8〜32文字で入力してください';return;}
   $('admin-password').value='';
   adminOff();adminOff=()=>{};adminPassword='';adminKey='';
   try{
     if(!db)db=getDatabase(initializeApp({databaseURL:DB_URL}));
     await update(ref(db,'s/'+key),{['adm/'+pw+'/check']:serverTimestamp()});
     if(gen!==adminGeneration)return;
-    adminPassword=pw;adminKey=key;$('admin-form').hidden=true;$('admin-panel').hidden=false;
+    adminPassword=pw;adminKey=key;adminTimeOff();adminTimeOff=onValue(ref(db,'.info/serverTimeOffset'),snap=>{if(gen===adminGeneration){offset=Number(snap.val())||0;renderAdmin(adminNames);}});adminSettingsOff();adminSettingsOff=onValue(ref(db,'s/'+key+'/settings'),snap=>{if(gen===adminGeneration){setNameDays(snap.val()?.nameDays);setStaleHours(snap.val()?.staleHours);renderAdmin(adminNames);}},err=>{if(gen===adminGeneration)$('admin-error').textContent='保持期間を取得できません：'+(err.code||err.message);});$('admin-form').hidden=true;$('admin-panel').hidden=false;
     adminOff=onValue(ref(db,'s/'+key+'/names'),snap=>{if(gen===adminGeneration)renderAdmin(snap.val());},err=>{
       if(gen!==adminGeneration)return;closeAdmin();$('access-error').textContent='管理者一覧を取得できません：'+(err.code||err.message);
     });
@@ -138,6 +156,22 @@ $('admin-list').onclick=async e=>{
   }catch(err){if(gen===adminGeneration)$('admin-error').textContent='強制削除できません：'+(err.code||err.message);}
   finally{if(button.isConnected)button.disabled=false;}
 };
+$('name-days-form').onsubmit=async e=>{
+  e.preventDefault();if(!adminPassword)return;const value=Number($('name-days').value);
+  if(!Number.isInteger(value)||value<1||value>365){$('name-days-status').textContent='1〜365日の整数で入力してください';return;}
+  const gen=adminGeneration;$('save-name-days').disabled=true;$('name-days-status').textContent='保存中…';
+  try{await update(ref(db,'s/'+adminKey),{'settings/nameDays':value,['adm/'+adminPassword+'/set']:serverTimestamp()});if(gen===adminGeneration)$('name-days-status').textContent='保存しました';}
+  catch(err){if(gen===adminGeneration)$('name-days-status').textContent='保存できません：'+(err.code||err.message);}
+  finally{$('save-name-days').disabled=false;}
+};
+$('stale-hours-form').onsubmit=async e=>{
+ e.preventDefault();if(!adminPassword)return;const value=Number($('stale-hours').value);
+ if(!Number.isInteger(value)||value<1||value>24){$('stale-hours-status').textContent='1〜24時間の整数で入力してください';return;}
+ const gen=adminGeneration;$('save-stale-hours').disabled=true;
+ try{await update(ref(db,'s/'+adminKey),{'settings/staleHours':value,['adm/'+adminPassword+'/set']:serverTimestamp()});if(gen===adminGeneration)$('stale-hours-status').textContent='保存しました';}
+ catch(err){if(gen===adminGeneration)$('stale-hours-status').textContent='保存できません：'+(err.code||err.message);}
+ finally{$('save-stale-hours').disabled=false;}
+};
 function normalizeName(name){return name.trim().normalize('NFKC').replace(/\s/gu,'').toLowerCase();}
 function nameKey(name){return encodeURIComponent(normalizeName(name)).replace(/\./g,'%2E');}
 function nameError(name){
@@ -151,7 +185,7 @@ async function claimName(key,name,refreshOnly=false){
   // 競合時の再実行でも、必ずサーバー推定時刻で判定。ローカル先行表示はしない。
   const result=await runTransaction(nameRef(key,name),current=>{
     if(refreshOnly&&(!current||current.deviceId!==deviceId||current.released===true))return;
-    if(current&&current.released!==true&&current.deviceId!==deviceId&&!(typeof current.at==='number'&&Date.now()+offset-current.at>NAME_TTL))return;
+    if(current&&current.released!==true&&current.deviceId!==deviceId&&!(typeof current.at==='number'&&Date.now()+offset-current.at>nameTTL()))return;
     return {deviceId,name,at:serverTimestamp()};
   },{applyLocally:false});
   return result.committed;
@@ -163,10 +197,21 @@ function connect(candidate=deviceName){
   try{
     if(!db)db=getDatabase(initializeApp({databaseURL:DB_URL}));
     root=ref(db,'s/'+accessKey);const gen=generation,key=accessKey,loaded=new Set();offsetReady=false;
-    let nameConfirmed=false,claiming=false;
-    const updateReady=()=>{ready=nameConfirmed&&loaded.size===3;render();};
+    let nameConfirmed=false,claiming=false,settingsReady=false,cleaned=false;
+    const cleanup=()=>{
+      if(cleaned||!nameConfirmed||!connected||!offsetReady||!settingsReady)return;cleaned=true;
+      for(const [part,ttl] of [['names',nameTTL()],['history',HISTORY_TTL]]){let consumed=false;
+        unsubscribers.push(onValue(ref(db,'s/'+key+'/'+part),snap=>{
+          if(consumed||gen!==generation)return;consumed=true;const patch={};
+          for(const [id,v] of Object.entries(snap.val()||{}))if(typeof v?.at==='number'&&v.at<serverNow()-ttl)patch[part+'/'+id]=null;
+          if(Object.keys(patch).length)update(ref(db,'s/'+key),patch).catch(e=>{if(gen===generation)$('save-status').textContent='期限切れデータを削除できません：'+(e.code||e.message);});
+        },e=>{if(gen===generation)$('save-status').textContent='期限切れデータを確認できません：'+(e.code||e.message);},{onlyOnce:true}));
+      }
+    };
+    const cleanupTimer=setInterval(()=>{if(gen===generation){cleaned=false;cleanup();}},3600000);unsubscribers.push(()=>clearInterval(cleanupTimer));
+    const updateReady=()=>{ready=nameConfirmed&&loaded.size===4;render();};
     const refreshName=async()=>{
-      if(!connected||!offsetReady||claiming||nameBusy||gen!==generation)return;
+      if(!connected||!offsetReady||!settingsReady||claiming||nameBusy||gen!==generation)return;
       // 改名後の再接続では、登録成功済みの現在名を更新する。
       if(nameConfirmed)candidate=deviceName;
       const refreshOnly=nameConfirmed;claiming=true;nameConfirmed=false;updateReady();
@@ -175,7 +220,7 @@ function connect(candidate=deviceName){
         if(gen!==generation)return;
         if(!accepted&&refreshOnly){removedName();return;}
         if(!accepted){stopSession();gate(NAME_TAKEN);$('access-name').value=candidate;$('access-name').focus();return;}
-        deviceName=candidate;prefSet('name',deviceName);nameConfirmed=true;watchOwnName(key,candidate,gen);updateReady();
+        deviceName=candidate;prefSet('name',deviceName);nameConfirmed=true;watchOwnName(key,candidate,gen);updateReady();cleanup();
         $('device-label').textContent='スタッフ：'+deviceName;
         $('access-gate').hidden=true;document.querySelector('header').inert=false;document.querySelector('main').inert=false;
       }catch(e){if(gen===generation){permissionError(e);if(!/permission.?denied/i.test(e.code||e.message||'')){stopSession();gate('同期エラー：'+(e.code||e.message));$('access-name').value=candidate;}}}
@@ -183,12 +228,15 @@ function connect(candidate=deviceName){
     };
     refreshCurrentName=refreshName;
     const watch=(target,fn)=>unsubscribers.push(onValue(target,snap=>{if(gen===generation)fn(snap.val());},e=>{if(gen===generation)permissionError(e);}));
-    watch(ref(db,'.info/serverTimeOffset'),v=>{offset=Number(v)||0;offsetReady=true;refreshName();});
-    watch(ref(db,'.info/connected'),v=>{const was=connected;connected=v===true;connectionStatus();if(connected&&!was)refreshName();});
+    watch(ref(db,'s/'+key+'/settings/nameDays'),v=>{setNameDays(v);settingsReady=true;loaded.add('settings');updateReady();refreshName();});
+    watch(ref(db,'s/'+key+'/settings/staleHours'),v=>{setStaleHours(v);});
+    watch(ref(db,'.info/serverTimeOffset'),v=>{offset=Number(v)||0;offsetReady=true;refreshName();render();});
+    watch(ref(db,'.info/connected'),v=>{const was=connected;connected=v===true;connectionStatus();if(connected&&!was){cleaned=false;refreshName();reconcileOutside();}});
     for(const part of ['placements','work','plans'])watch(ref(db,'s/'+key+'/'+part),v=>{
       if(part==='placements')receivePlacements(v||{});else state[part]=v||{};
       loaded.add(part);updateReady();
     });
+    watch(ref(db,'s/'+key+'/data'),v=>{sourceData=v;dataLoaded=true;reconcileOutside();render();});
     watch(query(ref(db,'s/'+key+'/history'),limitToLast(20)),v=>{state.history=Object.entries(v||{}).sort((a,b)=>(b[1].at||0)-(a[1].at||0)||b[0].localeCompare(a[0])).map(([,h])=>h);render();});
   }catch(e){stopSession();gate('接続設定を確認してください：'+e.message);}
 }
@@ -241,10 +289,39 @@ $('rename').onclick=async()=>{
   }catch(e){if(gen===generation)permissionError(e);}
   finally{nameBusy=false;refreshCurrentName();}
 };
-function classify(p){const v=VEHICLES.find(v=>v.reg===p.reg),r=RESERVATIONS.find(r=>r.reg===p.reg);if(!r)return {kind:'unknown',v,r,soon:false};const mins=t=>{const [h,m]=t.split(':').map(Number);return h*60+m;};const delta=mins(r.time)-mins(state.clock);return {kind:r.day,v,r,soon:r.day==='today'&&r.status==='予約'&&delta>=0&&delta<=CONFIG.soonMinutes};}
+function classify(p){
+ const v=vehicles().find(v=>v.reg===p.reg),records=Object.values(sourceData?.reservations?.[p.reg]||{});
+ const now=jstParts(),today=dateKey(now),tomorrow=dateKey(jstParts(new Date(serverNow()+86400000)));
+ const r=dataLoaded&&offsetReady?(records.find(r=>r.status==='予約'&&r.date>=today)||records.find(r=>r.status!=='予約')):null;
+ const kind=r?.status==='予約'?(r.date===today?'today':r.date===tomorrow?'tomorrow':'unknown'):'unknown';
+ const delta=r?Number(String(r.time).slice(0,2))*60+Number(String(r.time).slice(3))-Number(now.hour)*60-Number(now.minute):Infinity;
+ return {kind,v,r,soon:kind==='today'&&delta>=0&&delta<=CONFIG.soonMinutes};
+}
+function reservationLabel(r){const label=String(r.slot??'');return label+(r.est&&!label.endsWith('?')&&!label.endsWith('？')?'？':'');}
+function parseCreatedAt(value){
+ if(typeof value!=='string')return NaN;const m=value.match(/^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);if(!m)return NaN;
+ const [y,mo,d,h,mi,s]=m.slice(1).map(Number),utc=Date.UTC(y,mo-1,d,h,mi,s),check=new Date(utc);
+ if(y<2000||check.getUTCFullYear()!==y||check.getUTCMonth()!==mo-1||check.getUTCDate()!==d||h>23||mi>59||s>59)return NaN;return utc-9*3600000;
+}
+function renderDataStamp(){
+ const meta=sourceData?.meta,created=String(meta?.createdAt??'').match(/^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}:\d{2})/),imported=String(meta?.importedAt??'').match(/ (\d{2}:\d{2})/);
+ $('data-stamp').textContent=created?Number(created[2])+'/'+Number(created[3])+' '+created[4]+' のデータ（取込 '+(imported?.[1]||'未確認')+'）':'';
+ const made=parseCreatedAt(meta?.createdAt),sent=meta?.sentAt,now=serverNow();let warning='';
+ if(dataLoaded){
+  if(!Number.isFinite(made)||typeof sent!=='number'||!Number.isFinite(sent)||sent<=0)warning='データの時点が不明';
+  else if(made>now+600000||sent>now+600000)warning='データの時刻が未来になっています';
+  else if(sent<made-600000)warning='データの時点が不明';
+  else if(dateKey(jstParts(new Date(made)))<dateKey(jstParts()))warning='前日のデータです';
+  else if(now-made>staleHours*3600000)warning=staleHours+'時間以上前のデータです。司令塔に取込を依頼してください';
+ }
+ $('data-warning').textContent=warning;$('data-warning').hidden=!warning;
+ $('data-empty').textContent=dataLoaded?'司令塔がまだデータを送っていません':'データ読込中';
+ $('data-empty').hidden=dataLoaded&&!!sourceData&&!!Object.keys(sourceData.vehicles||{}).length;
+}
 function collision(p){return Object.values(state.placements).some(q=>q!==p&&q.digits===p.digits&&p.reg&&q.reg&&q.reg!==p.reg);}
-function tile(s){const p=state.placements[s.id],plan=state.plans[s.id]||'—';let inside=overview?'':'<span class="empty">＋ 4桁入力</span>',cls='tile';if(p){const x=classify(p);cls+=' '+x.kind+(x.soon?' soon':'')+(collision(p)?' collision':'');inside='<span class="identity"><b class="tag '+x.kind+'">'+CONFIG[x.kind].label+'</b><strong class="number">'+esc(p.digits)+'</strong></span>'+(x.r?.equipment?'<span class="equip" title="装備あり">◆</span>':'')+'<span class="sub">'+(x.r?esc(x.r.flight)+' · '+x.r.time:'予定未確認')+(x.r&&state.plans[s.id]&&x.r.flight!==state.plans[s.id]?' <b title="配置指示と異なる">≠</b>':'')+'</span>'+(x.r&&x.r.status!=='予約'?'<span class="sub muted">出発済み？（'+x.r.status+'）</span>':'')+(p.flag==='unresolved'?'<span class="warn">要選択</span>':'')+(p.flag==='outside'?'<span class="sub">候補なし（保有外の可能性）</span>':'')+(x.v?.outside?'<span class="sub">保有外の候補</span>':'')+(collision(p)?'<span class="warn">取り違え注意：同じ4桁</span>':'');}
-return '<div class="slot"><span class="place-label" data-plan="'+esc(plan)+'">'+esc(locationName(s.id))+'</span><button class="'+cls+'" data-slot="'+s.id+'" aria-label="'+esc(locationName(s.id)+(p?' '+p.digits+' 詳細':overview?' 空き枠（閲覧専用）':' 4桁入力'))+'">'+inside+'</button>'+(s.area==='share'?'<button class="work-state" '+(overview?'disabled aria-label="作業状態（閲覧専用）" ':'')+'data-work="'+s.id+'" data-state="'+(state.work[s.id]??0)+'">'+CONFIG.work[state.work[s.id]??0]+(overview?'':' ↻')+'</button>':'')+'</div>';}
+const workValue=id=>[0,1,2].includes(state.work[id])?state.work[id]:0;
+function tile(s){const p=state.placements[s.id],plan=state.plans[s.id]||'—';let inside=overview?'':'<span class="empty">＋ 4桁入力</span>',cls='tile';if(p){const x=classify(p);cls+=' '+x.kind+(x.soon?' soon':'')+(collision(p)?' collision':'');inside='<span class="identity">'+(x.kind!=='unknown'?'<b class="tag '+x.kind+'">'+CONFIG[x.kind].label+'</b>':'')+'<strong class="number">'+esc(p.digits)+'</strong></span>'+(x.r?.equip?'<span class="equip" title="装備あり">◆</span>':'')+'<span class="sub">'+(x.r?esc(reservationLabel(x.r))+(x.r.review?' <small class="review">要確認</small>':'')+' · '+esc(x.r.time):(dataLoaded?'予定未確認':'データ読込中'))+(x.r&&state.plans[s.id]&&x.r.slot!==state.plans[s.id]?' <b title="配置指示と異なる">≠</b>':'')+'</span>'+(x.r&&x.r.status!=='予約'?'<span class="sub muted">出発済み？（'+esc(x.r.status)+'）</span>':'')+(p.flag==='unresolved'?'<span class="warn">要選択</span>':'')+(p.flag==='outside'?'<span class="sub">候補なし（保有外の可能性）</span>':'')+(x.v?.outside?'<span class="sub">保有外の候補</span>':'')+(collision(p)?'<span class="warn">取り違え注意：同じ4桁</span>':'');}
+return '<div class="slot"><span class="place-label" data-plan="'+esc(plan)+'">'+esc(locationName(s.id))+'</span><button class="'+cls+'" data-slot="'+s.id+'" aria-label="'+esc(locationName(s.id)+(p?' '+p.digits+' 詳細':overview?' 空き枠（閲覧専用）':' 4桁入力'))+'">'+inside+'</button>'+(s.area==='share'?'<button class="work-state" '+(overview?'disabled aria-label="作業状態（閲覧専用）" ':'')+'data-work="'+s.id+'" data-state="'+workValue(s.id)+'">'+CONFIG.work[workValue(s.id)]+(overview?'':' ↻')+'</button>':'')+'</div>';}
 function section(area,body){const [name,bg,head]=CONFIG.areas[area];return '<section id="area-'+area+'" class="area '+area+(active===area?' active':'')+'" style="--ground:'+bg+';--head:'+head+'"><h2>'+name+'<small>'+SLOTS.filter(s=>s.area===area).length+'枠'+(area==='wait'?' / 指示32・閲覧のみ':'')+'</small></h2><div class="content">'+body+'</div></section>';}
 function spatialTile(s,mode){
 let html=tile(s),flight='<span class="flight-info">—</span>';
@@ -257,8 +334,8 @@ return html;
 function subArea(){const a=SLOTS.filter(s=>s.area==='sub');return section('sub','<div class="sub-layout">'+a.slice(0,8).map((s,i)=>'<div class="sub-position" style="grid-column:'+(i===0?2:i===1?3:(i-2)%3+1)+'">'+spatialTile(s,'sub-row')+'</div>').join('')+'<div class="sub-tail">'+a.slice(8).map(s=>spatialTile(s,'sub-tail')).join('')+'</div></div>');}
 function simple(area){return section(area,'<div class="simple-grid">'+SLOTS.filter(s=>s.area===area).map(tile).join('')+'</div>');}
 function render(){
-$('clock').value=state.clock;$('undo').disabled=overview||!state.undo||pendingWrites>0||!ready;
-$('reset').disabled=overview;$('erase').disabled=overview;
+renderDataStamp();placementGate();$('undo').disabled=overview||!state.undo||pendingWrites>0||!ready;
+$('erase').disabled=overview;
 $('tabs').innerHTML=Object.entries(CONFIG.areas).map(([a,[n,,c]])=>'<button style="--tab:'+c+'" data-tab="'+a+'" aria-selected="'+(active===a)+'">'+n+'</button>').join('');
 const wait=SLOTS.filter(s=>s.area==='wait');let w='<div class="wait-head"><span class="inst-title">指示・左</span><span>待機・左</span><span>番号</span><span>待機・右</span><span class="inst-title">指示・右</span></div>';
 for(let i=0;i<32;i+=2)w+='<div class="wait-row"><div class="instruction">'+esc(state.plans[wait[i].id]||'—')+'</div>'+tile(wait[i])+'<span class="lane-no">'+wait[i].label.replace('左','')+'</span>'+tile(wait[i+1])+'<div class="instruction">'+esc(state.plans[wait[i+1].id]||'—')+'</div></div>';
@@ -266,19 +343,19 @@ const dep=SLOTS.filter(s=>s.area==='depart');
 const departure=dep.map((s,i)=>{const left=i<7,row=left?i+1:i-6;return '<div class="dep-position" style="grid-column:'+(left?1:2)+';grid-row:'+row+(s.label==='①'?' / span 2':'')+'">'+spatialTile(s,left?'left':'right')+'</div>';}).join('');
 $('map').innerHTML='<div class="column far-left">'+simple('vertical')+'</div><div class="column left">'+section('wait',w)+'</div><div class="column middle">'+section('depart','<div class="dep-grid">'+departure+'</div>')+'<div class="mini-two">'+simple('fuel')+simple('wash')+'</div></div><div class="column right"><div class="landmark">レンタカー共同店舗<br><small>位置の目印・データなし</small></div>'+simple('roof')+subArea()+simple('share')+'</div>';
 fitOverview();
-$('history').innerHTML=state.history.length?state.history.map(h=>'<li>'+esc((typeof h.at==='number'?new Date(h.at).toLocaleTimeString('ja-JP'):'送信待ち')+' / '+h.label+' / '+(h.byName||'名称未設定'))+'</li>').join(''):'<li>操作はまだありません</li>';
+$('history').innerHTML=state.history.length?state.history.filter(h=>typeof h?.at==='number'&&h.at>=serverNow()-HISTORY_TTL).map(h=>'<li>'+esc((typeof h.at==='number'?new Date(h.at).toLocaleTimeString('ja-JP'):'送信待ち')+' / '+h.label+' / '+(h.byName||'名称未設定'))+'</li>').join(''):'<li>操作はまだありません</li>';
 }
-function openEditor(id){if(overview)return;selected=id;$('edit-place').textContent=locationName(id);$('digits').value='';$('input-error').textContent='';$('editor').showModal();$('digits').focus();}
+function openEditor(id){if(overview)return;selected=id;$('edit-place').textContent=locationName(id);$('digits').value='';$('input-error').textContent='';placementGate();$('editor').showModal();$('digits').focus();}
 function closeAll(){for(const d of document.querySelectorAll('dialog[open]'))d.close();}
 function ask(title,text,fn){if(overview)return;$('confirm-title').textContent=title;$('confirm-text').textContent=text;confirmAction=fn;$('confirm').showModal();}
-function put(p){if(overview)return;const old=p.reg?Object.keys(state.placements).find(id=>id!==selected&&state.placements[id].reg===p.reg):null;const target=selected;const finish=()=>{commit((old?'移動 '+locationName(old)+' → ': '配置 ')+locationName(target)+' / '+p.digits,()=>{if(old)delete state.placements[old];state.placements[target]=clone(p);});};closeAll();if(old)ask('車両の移動確認','この車両は'+locationName(old)+'にあります。移動しますか？（移動先：'+locationName(target)+'）',finish);else finish();}
-function choose(digits){if(overview)return;const candidates=VEHICLES.filter(v=>v.digits===digits);pending=digits;if(candidates.length===1)return put({digits,reg:candidates[0].reg});if(candidates.length===0)return put({digits,reg:null,flag:'outside'});closeAll();$('candidates').innerHTML=candidates.map(v=>'<button class="candidate" data-reg="'+v.reg+'"><strong>'+esc(v.name)+' / '+esc(v.full)+'</strong>クラス '+esc(v.class)+' · 管理店舗 '+esc(v.store)+'</button>').join('');$('picker').showModal();}
-function showDetail(id){selected=id;const p=state.placements[id];if(!p)return openEditor(id);const x=classify(p);$('detail-title').textContent=locationName(id)+' / '+p.digits;const rows=[['車名',x.v?.name||'未確定'],['フル車番',x.v?.full||'未確定（4桁 '+p.digits+'）'],['出発',x.r?(x.r.day==='today'?'今日':'明日')+' '+x.r.time:'予定未確認'],['便・時刻枠',x.r?.flight||'—'],['装備',x.r?.equipment||'なし'],['契約状態',x.r?.status||'未確認'],['管理店舗',x.v?.store||'未確認'],['注意',[p.flag==='unresolved'?'要選択':p.flag==='outside'?'候補なし（保有外の可能性）':'',collision(p)?'取り違え注意：同じ4桁の別車両あり':'',x.r?.status!=='予約'&&x.r?'出発済み？':'',x.v?.outside?'保有外の車両候補':'',x.r?.note||''].filter(Boolean).join(' / ')||'—']];$('detail-body').innerHTML='<dl class="detail-grid">'+rows.map(([k,v])=>'<dt>'+k+'</dt><dd>'+esc(v)+'</dd>').join('')+'</dl><p class="help">装備：C＝チャイルドシート、J＝ジュニアシート、B＝ベビーシート</p>';$('change').hidden=overview;$('clear').hidden=overview;$('resolve').hidden=overview||p.flag!=='unresolved';$('detail-readonly').hidden=!overview;$('detail').showModal();}
+function put(p){if(overview||!placementGate())return;const old=p.reg?Object.keys(state.placements).find(id=>id!==selected&&state.placements[id].reg===p.reg):null;const target=selected;const finish=()=>{if(!placementGate())return;commit((old?'移動 '+locationName(old)+' → ': '配置 ')+locationName(target)+' / '+p.digits,()=>{if(old)delete state.placements[old];state.placements[target]=clone(p);});};closeAll();if(old)ask('車両の移動確認','この車両は'+locationName(old)+'にあります。移動しますか？（移動先：'+locationName(target)+'）',finish);else finish();}
+function choose(digits){if(overview||!placementGate())return;const candidates=vehicles().filter(v=>v.digits===digits);pending=digits;if(candidates.length===1)return put({digits,reg:candidates[0].reg});if(candidates.length===0)return put({digits,reg:null,flag:'outside'});closeAll();$('candidates').innerHTML=candidates.map(v=>'<button class="candidate" data-reg="'+esc(v.reg)+'"><strong>'+esc(v.name)+' / '+esc(v.full)+'</strong>クラス '+esc(v.class)+' · 管理店舗 '+esc(v.store)+'</button>').join('');$('picker').showModal();}
+function showDetail(id){selected=id;const p=state.placements[id];if(!p)return openEditor(id);const x=classify(p);$('detail-title').textContent=locationName(id)+' / '+p.digits;const rows=[['車名',x.v?.name||'未確定'],['フル車番',x.v?.full||'未確定（4桁 '+p.digits+'）'],['出発',x.r?(x.kind==='today'?'今日':x.kind==='tomorrow'?'明日':x.r.date)+' '+x.r.time:(dataLoaded?'予定未確認':'データ読込中')],['便・時刻枠',x.r?reservationLabel(x.r):'—'],['装備',x.r?.equip||'なし'],['契約状態',x.r?.status||'未確認'],['クラス',x.v?.class||'未確認'],['管理店舗',x.v?.store||'未確認'],['注意',[p.flag==='unresolved'?'要選択':p.flag==='outside'?'候補なし（保有外の可能性）':'',collision(p)?'取り違え注意：同じ4桁の別車両あり':'',x.r?.status!=='予約'&&x.r?'出発済み？':'',x.v?.outside?'保有外の車両候補':'',x.r?.review?'要確認':'',x.r?.est?'推定？':''].filter(Boolean).join(' / ')||'—']];$('detail-body').innerHTML='<dl class="detail-grid">'+rows.map(([k,v])=>'<dt>'+k+'</dt><dd>'+esc(v)+'</dd>').join('')+'</dl><p class="help">装備：C＝チャイルドシート、J＝ジュニアシート、B＝ベビーシート</p>';$('change').hidden=overview;$('clear').hidden=overview;$('resolve').hidden=overview||p.flag!=='unresolved';$('detail-readonly').hidden=!overview;$('detail').showModal();}
 $('keys').innerHTML=['1','2','3','4','5','6','7','8','9','消去','0','⌫'].map(k=>'<button type="button" data-key="'+k+'">'+k+'</button>').join('');
 $('keys').onclick=e=>{const k=e.target.dataset.key;if(!k)return;const input=$('digits');input.value=k==='消去'?'':k==='⌫'?input.value.slice(0,-1):(input.value+k).slice(0,4);};
 $('digits').oninput=e=>{e.target.value=e.target.value.replace(/[^0-9]/g,'').slice(0,4);};
 $('digits').onkeydown=e=>{if(e.key==='Enter')$('submit').click();};
-$('submit').onclick=()=>{const d=$('digits').value;if(!/^[0-9]{4}$/.test(d)){$('input-error').textContent='数字4桁を入力してください';return;}choose(d);};
+$('submit').onclick=()=>{if(!placementGate())return;const d=$('digits').value;if(!/^[0-9]{4}$/.test(d)){$('input-error').textContent='数字4桁を入力してください';return;}choose(d);};
 $('candidates').onclick=e=>{const b=e.target.closest('[data-reg]');if(b)put({digits:pending,reg:b.dataset.reg});};
 $('unresolved').onclick=()=>put({digits:pending,reg:null,flag:'unresolved'});
 $('confirm-yes').onclick=()=>{if(overview)return;const fn=confirmAction;confirmAction=null;$('confirm').close();if(fn)fn();};
@@ -292,27 +369,24 @@ $('undo').onclick=()=>{
   for(const [path,value] of Object.entries(restore))patch[path]=path==='placements'&&value?Object.fromEntries(Object.entries(value).map(([id,p])=>[id,stamped(p)])):path.startsWith('placements/')&&value?stamped(value):value;
   sendPatch('直前操作を取り消し',patch,null,{undo:true});
 };
-$('clock').onchange=e=>{state.clock=e.target.value;render();};
-$('reset').onclick=()=>ask('ダミー初期データを入れますか？','共有中の全端末の配置・作業状態・配置指示を上書きします。',()=>{
+$('erase').onclick=()=>ask('全消去しますか？','共有中の配置・作業状態・配置指示を全消去します。操作履歴は7日間保持します。全端末に反映されます。',()=>{
   if(!ready||pendingWrites){$('save-status').textContent='読み込み・送信完了後に操作してください';return;}
-  const initial=seed();const placements=Object.fromEntries(Object.entries(initial.placements).map(([id,p])=>[id,stamped(p)]));
-  sendPatch('ダミー初期データを投入',{placements,work:initial.work,plans:PLANS},{placements:clone(state.placements),work:clone(state.work),plans:clone(state.plans)});
-});
-$('erase').onclick=()=>ask('全消去しますか？','共有中の配置・作業状態・配置指示・操作履歴を全消去します。全端末に反映されます。',()=>{
-  if(!ready||pendingWrites){$('save-status').textContent='読み込み・送信完了後に操作してください';return;}
-  // history親パスと子パスを同時にupdateすると競合するため履歴は新しい1件に置換。
+  // 履歴は期限内の削除を禁止。消去操作も追記で記録する。
   const key=push(ref(db,'s/'+accessKey+'/history')).key;
   const before={placements:clone(state.placements),work:clone(state.work),plans:clone(state.plans)};
   const target=root,gen=generation;const started=performance.now();pendingWrites++;state.undo=before;render();
   $('save-status').textContent='全消去を送信中…';
-  update(target,{placements:null,work:null,plans:null,history:{[key]:{at:serverTimestamp(),label:'全消去',byName:deviceName}}}).then(()=>{if(gen===generation)$('save-status').textContent='送信完了 '+((performance.now()-started)/1000).toFixed(1)+'秒';}).catch(e=>{if(gen===generation){state.undo=null;permissionError(e);}}).finally(()=>{pendingWrites--;render();});
+  update(target,{placements:null,work:null,plans:null,['history/'+key]:{at:serverTimestamp(),label:'全消去',byName:deviceName}}).then(()=>{if(gen===generation)$('save-status').textContent='送信完了 '+((performance.now()-started)/1000).toFixed(1)+'秒';}).catch(e=>{if(gen===generation){state.undo=null;permissionError(e);}}).finally(()=>{pendingWrites--;render();});
 });
-document.addEventListener('click',e=>{const close=e.target.closest('[data-close]');if(close)$(close.dataset.close).close();const tab=e.target.closest('[data-tab]');if(tab){active=tab.dataset.tab;render();}const work=e.target.closest('[data-work]');if(work&&!overview){const id=work.dataset.work;commit(locationName(id)+' 作業状態を変更',()=>{state.work[id]=((state.work[id]??0)+1)%3;});}const b=e.target.closest('[data-slot]');if(b&&!longPressed){state.placements[b.dataset.slot]?showDetail(b.dataset.slot):openEditor(b.dataset.slot);}longPressed=false;});
+document.addEventListener('click',e=>{const close=e.target.closest('[data-close]');if(close)$(close.dataset.close).close();const tab=e.target.closest('[data-tab]');if(tab){active=tab.dataset.tab;render();}const work=e.target.closest('[data-work]');if(work&&!overview){const id=work.dataset.work;commit(locationName(id)+' 作業状態を変更',()=>{state.work[id]=(workValue(id)+1)%3;});}const b=e.target.closest('[data-slot]');if(b&&!longPressed){state.placements[b.dataset.slot]?showDetail(b.dataset.slot):openEditor(b.dataset.slot);}longPressed=false;});
 let timer=null,longPressed=false;
 document.addEventListener('pointerdown',e=>{const b=e.target.closest('[data-slot]');if(b&&state.placements[b.dataset.slot])timer=setTimeout(()=>{longPressed=true;showDetail(b.dataset.slot);},600);});
 for(const type of ['pointerup','pointercancel','pointermove'])document.addEventListener(type,()=>clearTimeout(timer));
 window.addEventListener('beforeunload',e=>{if(pendingWrites){e.preventDefault();e.returnValue='';}});
-render();if(accessKey&&deviceName)connect();else gate();
+function recheckTime(){render();if($('detail').open)showDetail(selected);}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)recheckTime();});
+setInterval(recheckTime,60000);
+setNameDays(null);render();if(accessKey&&deviceName)connect();else gate();
 </script>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#eef2f5;color:#182733;font:14px 'Yu Gothic UI','Meiryo',sans-serif}button,input,select{font:inherit}button,select{cursor:pointer;min-height:44px;border:1px solid #b7c2cc;border-radius:5px;background:#fff;color:#182733;padding:7px 12px}button:hover{filter:brightness(.96)}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #182733;outline-offset:2px}button:disabled{opacity:.45;cursor:default}header{padding:17px 22px 12px;background:#fff;border-bottom:1px solid #c5cdd5}h1{font-size:23px;margin:0 0 7px}.eyebrow{font-size:12px;font-weight:bold;letter-spacing:.12em;color:#526878}.topline,.tools,.legend{display:flex;align-items:center;flex-wrap:wrap;gap:10px}.topline{justify-content:space-between}.notice{font-weight:bold;color:#6c4a12;background:#fff3cd;padding:8px 12px;border-radius:4px;margin:10px 0}.tools{font-size:13px}.stamp{font-weight:bold}.legend{margin-top:10px;font-size:12px;gap:7px 15px}.tag{display:inline-flex;background:var(--unknown);color:#fff;border-radius:3px;padding:1px 5px;font-size:16px;line-height:1.6;font-weight:800;flex-shrink:0}.tag.today{background:var(--today)}.tag.tomorrow{background:var(--tomorrow)}.redsample{display:inline-block;width:5px;height:20px;background:var(--danger);vertical-align:middle}.muted{color:#60707e}.danger{color:var(--danger);font-weight:bold}main{padding:14px 18px}.map{display:grid;grid-template-columns:minmax(410px,1.24fr) minmax(330px,1fr) minmax(280px,.85fr);gap:14px;max-width:1760px;margin:auto;align-items:start}.column{display:grid;gap:12px}.area{background:var(--ground);border:1px solid #c1ccd4;border-radius:6px;overflow:hidden}.area h2{margin:0;background:var(--head);color:white;font-size:15px;padding:8px 10px;display:flex;justify-content:space-between;gap:8px}.area h2 small{font-size:11px;align-self:center}.content{padding:8px}.wait-head,.wait-row{display:grid;grid-template-columns:64px minmax(0,1fr) 28px minmax(0,1fr) 64px;gap:4px;align-items:stretch}.wait-head{text-align:center;font-size:11px;margin-bottom:5px}.wait-row{margin-bottom:5px}.lane-no{align-self:center;text-align:center;font-weight:bold}.instruction{background:#F3E8FF;color:#6330ac;font-size:10px;display:flex;align-items:center;justify-content:center;border:1px solid #dfc9f5;border-radius:3px;overflow-wrap:anywhere;padding:3px}.inst-title{color:#7C3AED;font-weight:bold}.slot{min-width:0}.tile{display:block;position:relative;text-align:left;width:100%;border:1px solid #aebec8;border-radius:3px;min-height:67px;padding:6px 7px;background:#ffffffd9;overflow:hidden}.tile.unknown{background:#e5e7eb;color:#59636f}.tile.soon{border-left:5px solid var(--danger);padding-left:3px}.tile.collision{outline:2px solid var(--danger);outline-offset:-2px}.tile .number{font-size:25px;font-weight:800;letter-spacing:.03em;line-height:1.12;font-variant-numeric:tabular-nums}.identity{display:flex;gap:5px;align-items:center;padding-right:8px}.sub{font-size:10px;display:block;line-height:1.45;margin-top:3px}.warn{font-size:10px;display:block;color:var(--danger);font-weight:bold}.equip{position:absolute;right:3px;top:2px;font-size:10px;font-weight:bold}.empty{color:#6b7c87;font-size:12px;display:flex;align-items:center;justify-content:center;gap:5px}.place-label{font-size:10px;display:block;color:#53616c;margin-bottom:2px}.dep-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.dep-col{display:grid;gap:5px}.dep-cell{display:grid;grid-template-columns:23px minmax(0,1fr);gap:3px}.mini-two{display:grid;grid-template-columns:1fr 1fr;gap:12px}.simple-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.fuel .simple-grid,.wash .simple-grid{grid-template-columns:1fr}.landmark{padding:17px;background:#dde1e5;border:1px dashed #8795a0;color:#57616a;text-align:center;font-weight:bold;font-size:14px}.vertical{grid-column:1/-1}.vertical .simple-grid{grid-template-columns:repeat(8,minmax(0,1fr))}.work-state{width:100%;min-height:36px;border-radius:0 0 3px 3px;font-size:11px;padding:4px}.work-state[data-state="1"]{background:#fff3cd}.work-state[data-state="2"]{background:#d9f4df}.tabs{display:none}footer{max-width:1760px;margin:12px auto 0}.history{background:#fff;padding:10px;border:1px solid #ccd5db;border-radius:5px}summary{cursor:pointer;font-weight:bold;min-height:28px}.history ol{margin:5px 0;padding-left:24px;font-size:12px}.help{font-size:12px;margin:8px 0;color:#52616e}dialog{border:0;border-radius:10px;box-shadow:0 15px 70px #0005;padding:20px;width:min(510px,calc(100% - 24px));max-height:92dvh;overflow:auto;color:#182733}dialog::backdrop{background:#17253099}dialog h2{margin:0 0 10px;font-size:21px}.dialog-top{display:flex;justify-content:space-between;align-items:start;gap:8px}.close{min-width:44px;padding:5px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.primary{background:#183e56;color:#fff;border-color:#183e56}.number-input{width:100%;font-size:38px;text-align:center;letter-spacing:.16em;font-weight:bold;border:2px solid #8a9ca9;border-radius:5px;min-height:65px;margin:8px 0}.keys{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.keys button{min-height:56px;font-size:24px;background:#f0f4f7}.candidate{width:100%;text-align:left;margin:6px 0;padding:12px;line-height:1.7}.candidate strong{display:block;font-size:17px}.detail-grid{display:grid;grid-template-columns:100px 1fr;gap:9px;font-size:14px}.detail-grid dt{color:#60707e}.detail-grid dd{margin:0;font-weight:bold;overflow-wrap:anywhere}#save-status{font-size:12px}#input-error{min-height:20px}.full{width:100%}
@@ -381,22 +455,24 @@ body:not(.overview) .overview-help{display:none}
 .overview .empty{display:none}
 .overview .area{display:block}
 .overview .tile:empty{cursor:default}
+#data-warning{background:#e2e5e9;color:#182733;border:2px solid #52616e;padding:12px 16px;margin:12px 0;font-size:16px;font-weight:800}
 [hidden]{display:none!important}
 </style>
 </head>
 <body>
 <header>
-<div class="eyebrow">広島空港店 / PARKING OPERATIONS / ダミーデータ専用</div>
-<div class="topline"><h1>出発準備ダッシュボード｜同期試作</h1><span class="stamp">13時のデータ（模擬）</span></div>
-<div class="notice">同期の実験用・ダミーデータ専用。送信完了前はこのページを閉じないでください。</div>
+<div class="eyebrow">広島空港店 / PARKING OPERATIONS</div>
+<div class="topline"><h1>出発準備ダッシュボード｜同期試作</h1><span class="stamp" id="data-stamp"></span></div><div id="data-warning" role="alert" hidden></div>
+<div class="notice">送信完了前はこのページを閉じないでください。</div>
 <nav class="view-switch" aria-label="表示切替"><button id="view-overview" aria-pressed="false">全体図</button><button id="view-areas" aria-pressed="true">エリア別</button><p class="overview-help">閲覧専用：ピンチで拡大・指で移動。入力はエリア別表示で行います</p></nav>
-<div class="tools"><label>模擬の現在時刻 <select id="clock"><option>9:00</option><option selected>13:00</option><option>17:30</option></select></label><span>今日＝模擬1日目 / 明日＝模擬2日目</span><button id="undo">直前操作を元に戻す</button><button id="reset">ダミー初期データを入れる</button><button id="erase">全消去</button><button id="rename">スタッフ名を変更</button><button id="change-key">パスワードを変更</button><b id="device-label"></b><span id="save-status" role="status"></span></div>
+<div class="tools"><button id="undo">直前操作を元に戻す</button><button id="erase">全消去</button><button id="rename">スタッフ名を変更</button><button id="change-key">パスワードを変更</button><b id="device-label"></b><span id="save-status" role="status"></span></div>
 <div class="notice" id="connection" role="status">切断中（再接続待ち・入力は後で送信）</div><p id="last-received" role="status">最終受信：まだありません</p><details><summary>同期の実測</summary><p class="help">他端末の配置更新のサーバー確定時刻から受信まで（推定）。初回一覧は除外。クリアは時刻情報が消えるため計測対象外。負値は時刻推定の誤差です。</p><ol id="measurements"><li>まだありません</li></ol></details><div class="legend"><span><b class="tag today">今</b> 今日出発</span><span><b class="tag tomorrow">明</b> 明日出発</span><span><i class="redsample"></i> 1時間以内</span><span>灰色＝予定未確認</span><span>◆＝装備あり</span><span class="danger">赤文字＝取り違え注意・要選択</span><span>≠＝配置指示と異なる</span></div>
 </header>
 <main>
+<p id="data-empty" class="muted" role="status">司令塔がまだデータを送っていません</p>
 <nav class="tabs" aria-label="エリア切替" id="tabs"></nav>
 <div id="map-frame"><div class="map" id="map"></div></div>
-<footer><p class="help"><span class="area-help">空き枠を押す → 4桁入力。車両のある枠を押す → 詳細・変更・クリア。長押しでも詳細。</span><span class="overview-help">全体図は閲覧専用です。車両のある枠を押すと詳細を確認できます。入力はエリア別表示で行います。</span>配置指示はExcel側の読み取り表示です。全車番・車名・便は生成した架空の例（実車との一致を意図しない）です。</p><details class="history" open><summary>操作履歴（共有・直近20件）</summary><ol id="history"></ol></details></footer>
+<footer><p class="help"><span class="area-help">空き枠を押す → 4桁入力。車両のある枠を押す → 詳細・変更・クリア。長押しでも詳細。</span><span class="overview-help">全体図は閲覧専用です。車両のある枠を押すと詳細を確認できます。入力はエリア別表示で行います。</span>配置指示はExcel側の読み取り表示です。出発予定は司令塔から受信したデータを表示します。</p><details class="history" open><summary>操作履歴（共有・直近20件）</summary><ol id="history"></ol></details></footer>
 </main>
 <dialog id="editor" aria-labelledby="edit-title"><div class="dialog-top"><h2 id="edit-title">4桁入力</h2><button class="close" data-close="editor" aria-label="入力を閉じる">×</button></div><p id="edit-place" class="muted"></p><label for="digits">車番の下4桁（先頭の0も入力）</label><input id="digits" class="number-input" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" placeholder="0000"><div id="input-error" class="danger" role="alert"></div><div class="keys" id="keys"></div><div class="actions"><button id="submit" class="primary full">この4桁で確定</button></div></dialog>
 <dialog id="picker" aria-labelledby="pick-title"><div class="dialog-top"><h2 id="pick-title">車両を選んでください</h2><button class="close" data-close="picker" aria-label="候補選択を閉じる">×</button></div><p>4桁が同じ車両が複数あります。フル車番を確認してください。</p><div id="candidates"></div><button id="unresolved" class="full">未選択のまま置く（要選択）</button></dialog>
@@ -405,10 +481,11 @@ body:not(.overview) .overview-help{display:none}
 <section id="access-gate" style="position:fixed;inset:0;z-index:100;background:#eef2f5;overflow:auto;padding:30px 16px" aria-labelledby="gate-title">
 <form id="access-form" style="max-width:440px;margin:6vh auto;background:white;padding:24px;border-radius:8px">
 <h2 id="gate-title">同期試作に参加</h2><p>同じパスワードの端末で配置を共有します。</p>
-<p><label>パスワード <input id="access-key" type="password" autocomplete="off" required style="width:100%;min-height:44px"></label><small>デモ版のパスワードは 1234 です</small></p>
+<p><label>パスワード <input id="access-key" type="password" autocomplete="off" required style="width:100%;min-height:44px"></label></p>
 <p><label>スタッフ名（例：佐藤）<input id="access-name" maxlength="20" autocomplete="off" required style="width:100%;min-height:44px"></label></p>
 <p id="access-error" class="danger" role="alert"></p><button type="submit" class="primary">接続する</button> <button id="admin-open" type="button">管理者</button>
-<p class="help">パスワード・端末ID・スタッフ名のみをこのブラウザに保存します。模擬時刻はこのページ内のみ。切断中の未送信操作はページを閉じると失われます。</p>
+<p id="name-retention-help" class="help">スタッフ名の登録は30日使われないと解放され、利用中の端末が掃除します。操作履歴は7日を過ぎると、利用中の端末が削除します。配置中の車両には入力したスタッフ名が、その枠が空くまで残ります</p>
+<p class="help">パスワード・端末ID・スタッフ名のみをこのブラウザに保存します。切断中の未送信操作はページを閉じると失われます。</p>
 </form></section>
 
 <section id="admin-gate" hidden style="position:fixed;inset:0;z-index:110;background:#eef2f5;overflow:auto;padding:24px 16px" aria-labelledby="admin-title">
@@ -416,11 +493,14 @@ body:not(.overview) .overview-help{display:none}
 <h2 id="admin-title">管理者画面</h2>
 <form id="admin-form" autocomplete="off" style="max-width:440px">
 <p><label>店舗パスワード<input id="admin-store" type="password" autocomplete="off" required style="display:block;width:100%;min-height:44px"></label></p>
-<p><label>管理者パスワード（6桁）<input id="admin-password" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="off" required style="display:block;width:100%;min-height:44px"></label></p>
+<p><label>管理者パスワード（英数字8〜32文字）<input id="admin-password" type="password" pattern="[A-Za-z0-9]{8,32}" minlength="8" maxlength="32" autocomplete="off" required style="display:block;width:100%;min-height:44px"></label></p>
 <button type="submit" class="primary">管理者として接続</button>
 </form>
 <p id="admin-error" class="danger" role="alert"></p>
-<div id="admin-panel" hidden><p>最終利用日時の新しい順／日本時間。7日を超えた登録と改名で解放した登録は再利用できます。</p>
+<div id="admin-panel" hidden><p>最終利用日時の新しい順／日本時間。期限を超えた登録と改名で解放した登録は再利用できます。</p>
+<p id="admin-retention-help" class="help">スタッフ名の登録は30日使われないと解放され、利用中の端末が掃除します。操作履歴は7日を過ぎると、利用中の端末が削除します。配置中の車両には入力したスタッフ名が、その枠が空くまで残ります</p>
+<form id="name-days-form"><label>スタッフ名の保持日数（1〜365日）<input id="name-days" type="number" min="1" max="365" step="1" value="30" required></label> <button id="save-name-days" type="submit">保持日数を保存</button><span id="name-days-status" role="status"></span></form>
+<form id="stale-hours-form"><label>データの鮮度警告（1〜24時間）<input id="stale-hours" type="number" min="1" max="24" step="1" value="4" required></label> <button id="save-stale-hours" type="submit">警告時間を保存</button><span id="stale-hours-status" role="status"></span></form>
 <div style="overflow:auto"><table style="width:100%;border-collapse:collapse;text-align:left"><thead><tr><th>スタッフ名</th><th>識別子（deviceId）</th><th>最終利用日時（日本時間）</th><th>状態</th><th>操作</th></tr></thead><tbody id="admin-list"></tbody></table></div></div>
 <p><button id="admin-close" type="button">管理者画面を閉じる</button></p>
 </div></section>
