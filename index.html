@@ -6,14 +6,6 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://www.gstatic.com https://*.firebaseio.com https://*.firebasedatabase.app; style-src 'unsafe-inline'; img-src data:; connect-src https://*.firebaseio.com wss://*.firebaseio.com https://*.firebasedatabase.app wss://*.firebasedatabase.app; frame-src 'self' https://*.firebaseio.com https://*.firebasedatabase.app; base-uri 'none'; form-action 'none'">
 <title>出発準備ダッシュボード｜同期試作</title>
-<meta name="color-scheme" content="only light">
-<meta name="darkreader-lock">
-<script>
-try{if(localStorage.getItem('parking-sync-v1-theme')==='system'){
-  document.documentElement.dataset.theme='system';
-  document.querySelector('meta[name="color-scheme"]').content='light dark';
-}}catch{}
-</script>
 <script type="module">
 'use strict';
 // 接続先URLは非秘密。管理者資格情報は公開HTMLに固定保存せず、操作時のDBパスにのみ使用。
@@ -86,11 +78,11 @@ function readShare(data){
 }
 // 配置・作業はSDKのメモリーキャッシュのみ。端末固有設定だけ永続化。
 function prefGet(k){try{return localStorage.getItem(PREF+k)||'';}catch{return '';}}
-function prefSet(k,v){try{if(v)localStorage.setItem(PREF+k,v);else localStorage.removeItem(PREF+k);return true;}catch{$('access-error').textContent='ブラウザに設定を保存できません。このページ内だけで使用します。';return false;}}
+function prefSet(k,v){try{if(v)localStorage.setItem(PREF+k,v);else localStorage.removeItem(PREF+k);}catch{$('access-error').textContent='ブラウザに設定を保存できません。このページ内だけで使用します。';}}
 // 表示の選択だけ保存。既定は従来のエリア別（PCでは従来の全エリア）。
 let overview=prefGet('view')==='overview';
 // 元の位置を記録し、エリア別へ戻したら従来の順序・開閉状態を復元する。
-const viewExtras=Array.from(document.querySelectorAll('header .heading > .eyebrow,header h1,header > .notice:not(#connection):not(#pending-send),.view-switch .overview-help,header > details:not(#overview-extras),header > .legend')).map(node=>{const marker=document.createComment('area-view-position');node.before(marker);return {node,marker};});
+const viewExtras=Array.from(document.querySelectorAll('header .heading > .eyebrow,header h1,header > .notice:not(#connection):not(#pending-send),.view-switch .overview-help,header > .tools,header > details:not(#overview-extras),header > .legend')).map(node=>{const marker=document.createComment('area-view-position');node.before(marker);return {node,marker};});
 const compactHeader=matchMedia('(max-width:600px), (pointer:coarse) and (max-height:600px)');
 function placeUndo(){
   const undo=$('undo'),parent=!overview&&compactHeader.matches?$('admin-session-open').parentElement:$('device-label').parentElement;
@@ -561,15 +553,6 @@ document.addEventListener('click',e=>{const close=e.target.closest('[data-close]
 let timer=null,longPressed=false;
 document.addEventListener('pointerdown',e=>{const b=e.target.closest('[data-slot]');if(b&&shown(b.dataset.slot))timer=setTimeout(()=>{longPressed=true;showDetail(b.dataset.slot);},600);});
 for(const type of ['pointerup','pointercancel','pointermove'])document.addEventListener(type,()=>clearTimeout(timer));
-const currentTheme=()=>prefGet('theme')==='system'?'system':'light';
-$('theme-select').value=currentTheme();
-$('theme-select').onchange=()=>{
-  const selected=$('theme-select').value,previous=currentTheme();
-  if(selected===previous)return;
-  if(pendingWrites>0){$('theme-select').value=previous;$('save-status').textContent='送信完了後に切り替えてください';return;}
-  if(!prefSet('theme',selected)){$('theme-select').value=previous;$('save-status').textContent='画面の設定を保存できませんでした';return;}
-  location.reload();
-};
 window.addEventListener('beforeunload',e=>{if(pendingWrites){e.preventDefault();e.returnValue='';}});
 function recheckTime(){render();if($('detail').open)showDetail(selected);}
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)recheckTime();});
@@ -670,25 +653,6 @@ body.overview{background:#323941}.overview footer>.help{color:#e2e8f0}
  body:not(.overview) .wait-row .tile{grid-area:3/1;border-radius:0 0 3px 3px;padding-inline:5px}body:not(.overview) .wait-row .slot ~ .slot .tile{grid-column:2}body:not(.overview) .wait-row .identity{padding-right:0;gap:4px}body:not(.overview) .wait-row .tag{padding-inline:3px}
  body:not(.overview) :is(.dep-grid,.wait-row) .tile .number{font-size:34px;letter-spacing:0}body:not(.overview) :is(.dep-grid,.wait-row) .tile .tag{font-size:18px;padding:1px 3px}body:not(.overview) :is(.dep-grid,.wait-row) .tile .sub{font-size:13px}
 }
-:root{color-scheme:only light}:root[data-theme="system"]{color-scheme:light dark}
-.theme-choice{margin-inline-start:auto;flex-shrink:0;display:inline-flex;align-items:center;white-space:nowrap;font-size:11px}.theme-choice select{min-height:26px;padding:2px 4px;font-size:11px}.overview #undo{display:none}
-@media(prefers-color-scheme:dark){
- :root[data-theme="system"]{--dark-bg:#151c24;--dark-panel:#202a36;--dark-control:#293646;--dark-border:#718296;--dark-text:#edf3fa;--dark-muted:#bdc9d8;--dark-alert:#ffadad;--gate-bg:var(--dark-bg);--gate-card:var(--dark-panel);background:var(--dark-bg)}
- [data-theme="system"] body{background:var(--dark-bg);color:var(--dark-text)}[data-theme="system"] body.overview{background:#0c1118}[data-theme="system"] #readonly-band{background:#303e4e;color:#fff;border-bottom:1px solid var(--dark-border)}
- [data-theme="system"] :is(header,.history,.admin-top,dialog){background:var(--dark-panel);color:var(--dark-text);border-color:var(--dark-border)}[data-theme="system"] dialog::backdrop{background:#05090ecc}
- [data-theme="system"] :is(button,select,input){background:var(--dark-control);color:var(--dark-text);border-color:var(--dark-border)}[data-theme="system"] :is(button,select,input):focus-visible{outline-color:#d9eaff}
- [data-theme="system"] :is(.eyebrow,.muted,.help,.empty,.place-label,.flight-info,.detail-grid dt,#overview-extras>summary,#logout){color:var(--dark-muted)}
- [data-theme="system"] :is(.danger,.warn){color:var(--dark-alert)}[data-theme="system"] .notice{background:#3e301b;color:#ffdf98}[data-theme="system"] #data-warning{background:#39292e;color:#ffcdcd;border-color:#bc7b82}
- [data-theme="system"] .area{background:#202a36;border-color:var(--dark-border)}[data-theme="system"] .area h2{background:var(--head);color:#fff}[data-theme="system"] :is(.wait,.depart,.fuel,.vertical) h2{color:#080e15}
- [data-theme="system"] .tile{background:#283748;color:var(--dark-text)}[data-theme="system"] .tile.unknown{background:#3c424c;color:#f0f3f7}[data-theme="system"] .tile.soon{border-left-color:var(--danger)}
- [data-theme="system"] :is(.layout-sub-row,.layout-sub-tail) .tile::before{color:var(--dark-muted)}[data-theme="system"] .landmark{background:#303d4b;color:var(--dark-text)}
- [data-theme="system"] .work-state[data-state="1"]{background:#493515;color:#ffe0a0}[data-theme="system"] .work-state[data-state="2"]{background:#244435;color:#d7f8e3}
- [data-theme="system"] :is(.primary,.view-switch button[aria-pressed="true"]){background:#c0d8f4;color:#172639;border-color:#c0d8f4}
- [data-theme="system"] body:not(.overview) .tabs{background:var(--dark-bg)}[data-theme="system"] body:not(.overview) .tabs button{border-bottom-color:var(--tab)}[data-theme="system"] body:not(.overview) .tabs button[aria-selected="true"]{background:var(--tab);color:#141b22}
- [data-theme="system"] :is(.instruction,.inst-title){color:#ead7ff}[data-theme="system"] .instruction,[data-theme="system"] body:not(.overview) .wait-row .wait-plan-band{background:#402858;color:#ead7ff;border-color:#a284bd}
- [data-theme="system"] body:not(.overview) .wait-row .wait-plan-band.no-plan{background:#323945;color:#e2e9f1;border-color:var(--dark-border)}
- [data-theme="system"] .staff-duplicate{background:#4e3031;color:#ffd1ad}[data-theme="system"] .admin-table tr{border-color:var(--dark-border)}
-}
 </style>
 </head>
 <body>
@@ -698,7 +662,7 @@ body.overview{background:#323941}.overview footer>.help{color:#e2e8f0}
 <div class="topline"><h1>出発準備ダッシュボード<span class="title-extra">｜同期試作</span></h1><span class="stamp" id="data-stamp"></span></div></div><div id="data-warning" role="alert" hidden></div>
 <div class="notice" id="pending-send" role="status" hidden>送信完了前はこのページを閉じないでください。</div>
 <nav class="view-switch" aria-label="表示切替"><button id="view-overview" aria-pressed="false">全体図</button><button id="view-areas" aria-pressed="true">エリア別</button><p class="overview-help">閲覧専用：ピンチで拡大・指で移動。入力はエリア別表示で行います</p><button id="admin-session-open" type="button">管理者</button></nav>
-<div class="tools"><button id="undo">直前操作を元に戻す</button><b id="device-label"></b><span id="save-status" role="status"></span><label class="theme-choice">画面：<select id="theme-select"><option value="light">明るい</option><option value="system">端末に合わせる</option></select></label></div>
+<div class="tools"><button id="undo">直前操作を元に戻す</button><b id="device-label"></b><span id="save-status" role="status"></span></div>
 <p id="name-notice" role="status" hidden></p>
 <div class="notice" id="connection" role="status">切断中（再接続待ち・入力は後で送信）</div><details><summary>同期の実測</summary><p id="last-received" role="status">最終受信：まだありません</p><p class="help">他端末の配置更新のサーバー確定時刻から受信まで（推定）。初回一覧は除外。クリアは時刻情報が消えるため計測対象外。負値は時刻推定の誤差です。</p><ol id="measurements"><li>まだありません</li></ol></details><div class="legend"><span><b class="tag today">今</b> 今日出発</span><span><b class="tag tomorrow">明</b> 明日出発</span><span><i class="redsample"></i> 1時間以内</span><span>灰色＝予定未確認</span><span>◆＝装備あり</span><span class="danger">赤文字＝取り違え注意・要選択</span><span>≠＝配置指示と異なる</span></div>
 <details id="overview-extras" hidden><summary>その他の操作・説明</summary><div id="overview-extras-body"></div></details>
@@ -714,18 +678,18 @@ body.overview{background:#323941}.overview footer>.help{color:#e2e8f0}
 <dialog id="picker" aria-labelledby="pick-title"><div class="dialog-top"><h2 id="pick-title">車両を選んでください</h2><button class="close" data-close="picker" aria-label="候補選択を閉じる">×</button></div><p>4桁が同じ車両が複数あります。フル車番を確認してください。</p><div id="candidates"></div><button id="unresolved" class="full">未選択のまま置く（要選択）</button></dialog>
 <dialog id="confirm" aria-labelledby="confirm-title"><h2 id="confirm-title"></h2><p id="confirm-text"></p><div class="actions"><button id="confirm-yes" class="primary">はい</button><button id="confirm-no">いいえ</button></div></dialog>
 <dialog id="detail" aria-labelledby="detail-title"><div class="dialog-top"><h2 id="detail-title">車両の詳細</h2><button class="close" data-close="detail" aria-label="詳細を閉じる">×</button></div><div id="detail-body"></div><p id="detail-readonly" class="help" hidden>入力はエリア別表示で行います</p><div class="actions"><button id="change" class="primary">4桁を入力・変更</button><button id="resolve">候補を選ぶ</button><button id="clear">この枠をクリア</button></div></dialog>
-<section id="access-gate" style="position:fixed;inset:0;z-index:100;background:var(--gate-bg,#eef2f5);overflow:auto;padding:30px 16px" aria-labelledby="gate-title">
-<form id="access-form" style="max-width:440px;margin:6vh auto;background:var(--gate-card,white);padding:24px;border-radius:8px">
+<section id="access-gate" style="position:fixed;inset:0;z-index:100;background:#eef2f5;overflow:auto;padding:30px 16px" aria-labelledby="gate-title">
+<form id="access-form" style="max-width:440px;margin:6vh auto;background:white;padding:24px;border-radius:8px">
 <h2 id="gate-title">同期試作に参加</h2><p>同じ店舗共通パスワードの端末で配置を共有します。</p>
 <p><label>店舗共通パスワード <input id="access-key" type="password" autocomplete="off" aria-describedby="access-key-help" required style="width:100%;min-height:44px"></label></p><p id="access-key-help" class="help">店舗のスタッフ全員で共通です（個人のパスワードではありません）。通常はQRコードで入るため入力不要です</p>
 <p><label>スタッフ名（例：佐藤）<input id="access-name" maxlength="20" autocomplete="off" style="width:100%;min-height:44px"></label></p>
 <p id="access-error" class="danger" role="alert"></p><button id="access-submit" type="submit" class="primary">接続する</button> <button id="admin-open" type="button">管理者</button>
 <p id="name-retention-help" class="help">スタッフの登録は30日使われないと、利用中の端末が削除します。操作履歴は7日を過ぎると、利用中の端末が削除します。配置中の車両には入力したスタッフ名が、その枠が空くまで残ります</p>
-<p class="help">店舗共通パスワード・端末ID・スタッフ名・表示設定をこのブラウザに保存します。切断中の未送信操作はページを閉じると失われます。</p>
+<p class="help">店舗共通パスワード・端末ID・スタッフ名のみをこのブラウザに保存します。切断中の未送信操作はページを閉じると失われます。</p>
 </form></section>
 
-<section id="admin-gate" hidden style="position:fixed;inset:0;z-index:110;background:var(--gate-bg,#eef2f5);overflow:auto;padding:24px 16px" aria-labelledby="admin-title">
-<div style="max-width:1100px;margin:4vh auto;background:var(--gate-card,white);padding:24px;border-radius:8px">
+<section id="admin-gate" hidden style="position:fixed;inset:0;z-index:110;background:#eef2f5;overflow:auto;padding:24px 16px" aria-labelledby="admin-title">
+<div style="max-width:1100px;margin:4vh auto;background:white;padding:24px;border-radius:8px">
 <div class="admin-top"><h2 id="admin-title">管理者画面</h2><button id="admin-close" type="button">管理者画面を閉じる</button></div>
 <form id="admin-form" autocomplete="off" style="max-width:440px">
 <p id="admin-store-row"><label>店舗共通パスワード<input id="admin-store" type="password" autocomplete="off" required style="display:block;width:100%;min-height:44px"></label></p>
