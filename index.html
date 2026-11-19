@@ -82,7 +82,13 @@ function prefSet(k,v){try{if(v)localStorage.setItem(PREF+k,v);else localStorage.
 // 表示の選択だけ保存。既定は従来のエリア別（PCでは従来の全エリア）。
 let overview=prefGet('view')==='overview';
 // 元の位置を記録し、エリア別へ戻したら従来の順序・開閉状態を復元する。
-const viewExtras=Array.from(document.querySelectorAll('header > .eyebrow,header h1,header > .notice:not(#connection),.view-switch .overview-help,header > .tools,#last-received,header > details:not(#overview-extras),header > .legend')).map(node=>{const marker=document.createComment('area-view-position');node.before(marker);return {node,marker};});
+const viewExtras=Array.from(document.querySelectorAll('header .heading > .eyebrow,header h1,header > .notice:not(#connection):not(#pending-send),.view-switch .overview-help,header > .tools,header > details:not(#overview-extras),header > .legend')).map(node=>{const marker=document.createComment('area-view-position');node.before(marker);return {node,marker};});
+const compactHeader=matchMedia('(max-width:600px), (pointer:coarse) and (max-height:600px)');
+function placeUndo(){
+  const undo=$('undo'),parent=!overview&&compactHeader.matches?$('admin-session-open').parentElement:$('device-label').parentElement;
+  if(undo.parentElement!==parent){if(parent.classList.contains('view-switch'))parent.append(undo);else parent.prepend(undo);}
+}
+compactHeader.addEventListener('change',placeUndo);
 function fitOverview(){
   const map=$('map'),frame=$('map-frame');
   if(!overview){map.style.transform='';frame.style.height='';return;}
@@ -94,7 +100,7 @@ function fitOverview(){
 function applyView(){
   for(const {node,marker} of viewExtras)if(overview)$('overview-extras-body').append(node);else marker.after(node);
   $('overview-extras').hidden=!overview;$('overview-extras').open=false;
-  document.body.classList.toggle('overview',overview);
+  document.body.classList.toggle('overview',overview);$('readonly-band').hidden=!overview;placeUndo();
   $('view-overview').setAttribute('aria-pressed',String(overview));
   $('view-areas').setAttribute('aria-pressed',String(!overview));
 }
@@ -114,10 +120,10 @@ function gate(message=''){
   closeAll();$('access-gate').hidden=false;document.querySelector('header').inert=true;document.querySelector('main').inert=true;
   $('access-key').value=accessKey;$('access-name').value=deviceName;$('access-error').textContent=message;
 }
-function stopSession(){generation++;unwatchName();unwatchName=()=>{};for(const off of unsubscribers)off();unsubscribers=[];root=null;ready=false;connected=false;previousPlacements=null;sourceData=null;autoShare={};dataLoaded=false;state.placements={};state.work={};state.plans={};state.history=[];state.undo=null;measurements=[];$('measurements').innerHTML='<li>まだありません</li>';$('last-received').textContent='最終受信：まだありません';render();connectionStatus();}
+function stopSession(){if(!$('admin-gate').hidden)closeAdmin(false);generation++;unwatchName();unwatchName=()=>{};for(const off of unsubscribers)off();unsubscribers=[];root=null;ready=false;connected=false;previousPlacements=null;sourceData=null;autoShare={};dataLoaded=false;state.placements={};state.work={};state.plans={};state.history=[];state.undo=null;measurements=[];$('measurements').innerHTML='<li>まだありません</li>';$('last-received').textContent='最終受信：まだありません';render();connectionStatus();}
 const isPermissionDenied=e=>/permission.?denied/i.test(e.code||e.message||'');
 function permissionError(e){if(isPermissionDenied(e)){stopSession();accessKey='';prefSet('key','');gate('店舗共通パスワードが違います');}else $('save-status').textContent='同期エラー：'+(e.code||e.message);}
-function connectionStatus(){$('connection').textContent=connected?'接続中':'切断中（再接続待ち・入力は後で送信）／表示中のデータは最新でない可能性';}
+function connectionStatus(){$('connection').hidden=connected;$('connection').textContent=connected?'接続中':'切断中（再接続待ち・入力は後で送信）／表示中のデータは最新でない可能性';renderErase();}
 function stamped(p){if(!/^[0-9]{4}$/.test(p.digits))throw new Error('数字4桁を入力してください');return {digits:p.digits,reg:p.reg??null,flag:p.flag??null,by:deviceId,byName:deviceName,at:serverTimestamp()};}
 function receivePlacements(next){
   next=Object.fromEntries(Object.entries(next).filter(([id])=>!SHARE_IDS.has(id)));
@@ -147,14 +153,27 @@ function watchOwnName(key,name,gen){
   },e=>{if(gen===generation)permissionError(e);});
 }
 // 管理者資格情報はこのページのメモリー内だけ。閉じる・離脱時に破棄する。
-let adminPassword='',adminKey='',adminOff=()=>{},adminSettingsOff=()=>{},adminTimeOff=()=>{},adminNames={},adminGeneration=0;
-function closeAdmin(){adminGeneration++;adminOff();adminSettingsOff();adminTimeOff();adminTimeOff=()=>{};adminSettingsOff=()=>{};adminOff=()=>{};adminPassword='';adminKey='';$('admin-password').value='';$('admin-list').replaceChildren();$('admin-panel').hidden=true;$('admin-gate').hidden=true;gate();}
-$('admin-open').onclick=()=>{
-  stopSession();$('access-gate').hidden=true;$('admin-gate').hidden=false;$('admin-form').hidden=false;$('admin-panel').hidden=true;
-  $('admin-store').value=accessKey;$('admin-password').value='';$('admin-error').textContent='';$('admin-store').focus();
-};
-$('admin-close').onclick=closeAdmin;
-window.addEventListener('pagehide',closeAdmin);
+let adminPassword='',adminKey='',adminOff=()=>{},adminSettingsOff=()=>{},adminTimeOff=()=>{},adminNames={},adminGeneration=0,adminInSession=false;
+function closeAdmin(restore=true){
+  const wasOpen=!$('admin-gate').hidden,inSession=adminInSession;
+  adminGeneration++;adminOff();adminSettingsOff();adminTimeOff();adminTimeOff=()=>{};adminSettingsOff=()=>{};adminOff=()=>{};
+  adminPassword='';adminKey='';adminNames={};adminInSession=false;$('admin-password').value='';$('admin-store').value='';$('admin-list').replaceChildren();$('admin-panel').hidden=true;$('admin-gate').hidden=true;
+  if($('confirm').open){confirmAction=null;$('confirm').close();}
+  if(!wasOpen||!restore)return;
+  if(inSession){document.querySelector('header').inert=false;document.querySelector('main').inert=false;$('admin-session-open').focus();}else gate();
+}
+function openAdmin(inSession){
+  if(inSession&&!root)return;
+  if(!inSession)stopSession();
+  closeAll();adminInSession=inSession;$('access-gate').hidden=true;$('admin-gate').hidden=false;$('admin-form').hidden=false;$('admin-panel').hidden=true;
+  document.querySelector('header').inert=true;document.querySelector('main').inert=true;
+  $('admin-store-row').hidden=inSession;$('admin-store').disabled=inSession;$('admin-store').value=inSession?'':accessKey;
+  $('admin-device-actions').hidden=!inSession;$('admin-password').value='';$('admin-error').textContent='';$('name-days-status').textContent='';$('stale-hours-status').textContent='';$(inSession?'admin-password':'admin-store').focus();
+}
+$('admin-open').onclick=()=>openAdmin(false);
+$('admin-session-open').onclick=()=>openAdmin(true);
+$('admin-close').onclick=()=>closeAdmin();
+window.addEventListener('pagehide',()=>{if(!$('admin-gate').hidden)closeAdmin();});
 function renderAdmin(names){
   adminNames=names;
   const now=Date.now()+offset;
@@ -165,7 +184,7 @@ function renderAdmin(names){
   }).join('');
 }
 $('admin-form').onsubmit=async e=>{
-  e.preventDefault();const key=$('admin-store').value.trim(),pw=$('admin-password').value;const gen=++adminGeneration;
+  e.preventDefault();const key=adminInSession?accessKey:$('admin-store').value.trim(),pw=$('admin-password').value;const gen=++adminGeneration;
   $('admin-error').textContent='';
   if(!key||/[.#$\[\]\/\u0000-\u001f\u007f]/.test(key)||new TextEncoder().encode(key).length>768){$('admin-error').textContent='店舗共通パスワードを確認してください';return;}
   if(!/^[!-~]{8,32}$/.test(pw)||/[.#$\[\]\/]/.test(pw)){$('admin-error').textContent='管理者パスワードは半角8〜32文字で入力してください（. # $ [ ] / と空白は使えません）';return;}
@@ -176,8 +195,9 @@ $('admin-form').onsubmit=async e=>{
     await update(ref(db,'s/'+key),{['adm/'+pw+'/check']:serverTimestamp()});
     if(gen!==adminGeneration)return;
     adminPassword=pw;adminKey=key;adminTimeOff();adminTimeOff=onValue(ref(db,'.info/serverTimeOffset'),snap=>{if(gen===adminGeneration){offset=Number(snap.val())||0;renderAdmin(adminNames);}});adminSettingsOff();adminSettingsOff=onValue(ref(db,'s/'+key+'/settings'),snap=>{if(gen===adminGeneration){setNameDays(snap.val()?.nameDays);setStaleHours(snap.val()?.staleHours);renderAdmin(adminNames);}},err=>{if(gen===adminGeneration)$('admin-error').textContent='保持期間を取得できません：'+(err.code||err.message);});$('admin-form').hidden=true;$('admin-panel').hidden=false;
+    renderErase();
     adminOff=onValue(ref(db,'s/'+key+'/names'),snap=>{if(gen===adminGeneration)renderAdmin(snap.val());},err=>{
-      if(gen!==adminGeneration)return;closeAdmin();$('access-error').textContent='管理者一覧を取得できません：'+(err.code||err.message);
+      if(gen!==adminGeneration)return;const inSession=adminInSession;closeAdmin();$(inSession?'save-status':'access-error').textContent='管理者一覧を取得できません：'+(err.code||err.message);
     });
   }catch(err){if(gen===adminGeneration)$('admin-error').textContent=/permission.?denied/i.test(err.code||err.message||'')?'管理者パスワードが違います':'接続できません：'+(err.code||err.message);}
 };
@@ -283,9 +303,8 @@ function receiveData(v){
 }
 function receiveWork(v){workRevision++;state.work=v||{};}
 function shareWorkIn(patch){
-  // Include an all-clear undo, which can restore multiple assignment-bound states at once.
   return SHARE_SLOTS.flatMap(({id,label})=>{
-    const assign=(patch['work/'+id] ?? patch.work?.[id])?.assign;
+    const assign=patch['work/'+id]?.assign;
     return typeof assign==='string'?[{label,assign}]:[];
   });
 }
@@ -364,7 +383,8 @@ $('access-form').onsubmit=e=>{
 };
 $('logout').onclick=()=>{if(pendingWrites||nameBusy){$('save-status').textContent='送信完了後にログアウトしてください';return;}if(!confirm('この端末からログアウトし、保存した店舗共通パスワードを忘れさせますか？再び利用するにはQRコードまたは店舗共通パスワードが必要です。'))return;stopSession();accessKey='';prefSet('key','');gate();};
 $('rename').onclick=async()=>{
-  if(nameBusy||!ready||!connected){$('save-status').textContent='接続・確認完了後にスタッフ名を変更してください';return;}
+  if(!adminInSession||!adminPassword)return;
+  if(nameBusy||!ready||!connected){$('admin-error').textContent='接続・確認完了後にスタッフ名を変更してください';return;}
   const n=prompt('スタッフ名（例：佐藤）・20文字以内',deviceName);if(n===null)return;
   const invalid=nameError(n);if(invalid){alert(invalid);return;}
   const key=accessKey,old=deviceName,gen=generation;nameBusy=true;
@@ -435,8 +455,8 @@ return html;
 function subArea(){const a=SLOTS.filter(s=>s.area==='sub');return section('sub','<div class="sub-layout">'+a.slice(0,8).map((s,i)=>'<div class="sub-position" style="grid-column:'+(i===0?2:i===1?3:(i-2)%3+1)+'">'+spatialTile(s,'sub-row')+'</div>').join('')+'<div class="sub-tail">'+a.slice(8).map(s=>spatialTile(s,'sub-tail')).join('')+'</div></div>');}
 function simple(area){return section(area,'<div class="simple-grid">'+SLOTS.filter(s=>s.area===area).map(tile).join('')+'</div>');}
 function render(){
+ $('pending-send').hidden=pendingWrites===0;renderErase();
 renderDataStamp();placementGate();$('undo').disabled=overview||!state.undo||pendingWrites>0||!ready;
-$('erase').disabled=overview;
 $('tabs').innerHTML=Object.entries(CONFIG.areas).map(([a,[n,,c]])=>'<button style="--tab:'+c+'" data-tab="'+a+'" aria-selected="'+(active===a)+'">'+n+'</button>').join('');
 const wait=SLOTS.filter(s=>s.area==='wait');let w='<div class="wait-head"><span class="inst-title">指示・左</span><span>待機・左</span><span>番号</span><span>待機・右</span><span class="inst-title">指示・右</span></div>';
 for(let i=0;i<32;i+=2)w+='<div class="wait-row"><div class="instruction">'+esc(state.plans[wait[i].id]||'—')+'</div>'+tile(wait[i])+'<span class="lane-no">'+wait[i].label.replace('左','')+'</span>'+tile(wait[i+1])+'<div class="instruction">'+esc(state.plans[wait[i+1].id]||'—')+'</div></div>';
@@ -446,9 +466,23 @@ $('map').innerHTML='<div class="column far-left">'+simple('vertical')+'</div><di
 fitOverview();
 $('history').innerHTML=state.history.length?state.history.filter(h=>typeof h?.at==='number'&&h.at>=serverNow()-HISTORY_TTL).map(h=>'<li>'+esc((typeof h.at==='number'?new Date(h.at).toLocaleTimeString('ja-JP'):'送信待ち')+' / '+h.label+' / '+(h.byName||'名称未設定'))+'</li>').join(''):'<li>操作はまだありません</li>';
 }
-function openEditor(id){if(overview||SHARE_IDS.has(id))return;selected=id;$('edit-place').textContent=locationName(id);$('digits').value='';$('input-error').textContent='';placementGate();$('editor').showModal();$('digits').focus();}
+function openEditor(id){if(overview||SHARE_IDS.has(id))return;selected=id;$('edit-place').textContent=locationName(id);$('digits').value='';$('input-error').textContent='';placementGate();$('editor').showModal();if(!matchMedia('(pointer:coarse)').matches&&!navigator.maxTouchPoints)$('digits').focus();}
 function closeAll(){for(const d of document.querySelectorAll('dialog[open]'))d.close();}
-function ask(title,text,fn){if(overview)return;$('confirm-title').textContent=title;$('confirm-text').textContent=text;confirmAction=fn;$('confirm').showModal();}
+function ask(title,text,fn){$('confirm-title').textContent=title;$('confirm-text').textContent=text;confirmAction=fn;$('confirm').showModal();}
+for(const id of ['detail','editor','picker']){
+  const d=$(id),outside=e=>{const r=d.getBoundingClientRect();return e.target===d&&(e.clientX<r.left||e.clientX>=r.right||e.clientY<r.top||e.clientY>=r.bottom);};
+  let pointer=null;
+  d.addEventListener('pointerdown',e=>{pointer=outside(e)?e.pointerId:null;});
+  d.addEventListener('pointerup',e=>{if(pointer===e.pointerId&&outside(e))d.close();pointer=null;});
+  d.addEventListener('pointercancel',()=>{pointer=null;});
+}
+function showEmptyHint(id){selected=id;$('empty-hint').showModal();}
+$('open-slot-area').onclick=()=>{
+  const id=selected;active=slot(id).area;setView(false);
+  document.querySelector('[data-tab="'+active+'"]').scrollIntoView({block:'nearest',inline:'nearest'});
+  document.querySelector('[data-slot="'+id+'"]').scrollIntoView({block:'center'});
+  if(shown(id))showDetail(id);else openEditor(id);
+};
 function put(p){if(overview||SHARE_IDS.has(selected)||!placementGate())return;const old=p.reg?Object.keys(state.placements).find(id=>id!==selected&&state.placements[id].reg===p.reg):null;const target=selected;const finish=()=>{if(!placementGate())return;commit((old?'移動 '+locationName(old)+' → ': '配置 ')+locationName(target)+' / '+p.digits,()=>{if(old)delete state.placements[old];state.placements[target]=clone(p);});};closeAll();if(old)ask('車両の移動確認','この車両は'+locationName(old)+'にあります。移動しますか？（移動先：'+locationName(target)+'）',finish);else finish();}
 function choose(digits){if(overview||SHARE_IDS.has(selected)||!placementGate())return;const candidates=vehicles().filter(v=>v.digits===digits);pending=digits;if(candidates.length===1)return put({digits,reg:candidates[0].reg});if(candidates.length===0)return put({digits,reg:null,flag:'outside'});closeAll();$('candidates').innerHTML=candidates.map(v=>'<button class="candidate" data-reg="'+esc(v.reg)+'"><strong>'+esc(v.name)+' / '+esc(v.full)+'</strong>クラス '+esc(v.class)+' · 管理店舗 '+esc(v.store)+'</button>').join('');$('picker').showModal();}
 function showDetail(id){selected=id;const p=shown(id),auto=SHARE_IDS.has(id);if(!p){if(auto)$('detail').close();else openEditor(id);return;}const x=classify(p);$('detail-title').textContent=locationName(id)+' / '+p.digits;const rows=[['車名',x.v?.name||'未確定'],['フル車番',x.v?.full||'未確定（4桁 '+p.digits+'）'],['出発',x.r?(x.kind==='today'?'今日':x.kind==='tomorrow'?'明日':x.r.date)+' '+x.r.time:(dataLoaded?'予定未確認':'データ読込中')],['便・時刻枠',x.r?reservationLabel(x.r):'—'],['装備',x.r?.equip||'なし'],['契約状態',x.r?.status||'未確認'],['クラス',x.v?.class||'未確認'],['管理店舗',x.v?.store||'未確認'],['注意',[p.flag==='unresolved'?'要選択':p.flag==='outside'?'候補なし（保有外の可能性）':'',collision(p)?'取り違え注意：別の枠にも同じ4桁あり':'',x.r?.status!=='予約'&&x.r?'出発済み？':'',x.v?.outside?'保有外の車両候補':'',x.r?.review?'要確認':'',x.r?.est?'推定？':''].filter(Boolean).join(' / ')||'—']];$('detail-body').innerHTML='<dl class="detail-grid">'+rows.map(([k,v])=>'<dt>'+k+'</dt><dd>'+esc(v)+'</dd>').join('')+'</dl><p class="help">装備：C＝チャイルドシート、J＝ジュニアシート、B＝ベビーシート</p>';$('change').hidden=overview||auto;$('clear').hidden=overview||auto;$('resolve').hidden=overview||auto||p.flag!=='unresolved';$('detail-readonly').hidden=!overview&&!auto;$('detail-readonly').textContent=auto?'カーシェアは予約から自動表示します':'入力はエリア別表示で行います';$('detail').showModal();}
@@ -459,7 +493,8 @@ $('digits').onkeydown=e=>{if(e.key==='Enter')$('submit').click();};
 $('submit').onclick=()=>{if(!placementGate())return;const d=$('digits').value;if(!/^[0-9]{4}$/.test(d)){$('input-error').textContent='数字4桁を入力してください';return;}choose(d);};
 $('candidates').onclick=e=>{const b=e.target.closest('[data-reg]');if(b)put({digits:pending,reg:b.dataset.reg});};
 $('unresolved').onclick=()=>put({digits:pending,reg:null,flag:'unresolved'});
-$('confirm-yes').onclick=()=>{if(overview)return;const fn=confirmAction;confirmAction=null;$('confirm').close();if(fn)fn();};
+$('confirm').addEventListener('cancel',e=>e.preventDefault());
+$('confirm-yes').onclick=()=>{const fn=confirmAction;confirmAction=null;$('confirm').close();if(fn)fn();};
 $('confirm-no').onclick=()=>{confirmAction=null;$('confirm').close();};
 $('change').onclick=()=>{$('detail').close();openEditor(selected);};
 $('resolve').onclick=()=>{if(!overview&&!SHARE_IDS.has(selected)&&state.placements[selected])choose(state.placements[selected].digits);};
@@ -470,26 +505,26 @@ $('undo').onclick=()=>{
   for(const [path,value] of Object.entries(restore)){
     const id=path.startsWith('work/')?path.slice(5):null;
     if(SHARE_IDS.has(id)&&!matchesWork(value,autoShare[id]?.assign))continue;
-    if(path==='work'&&value){
-      // An erase undo must not restore old or replaced assignments, even alongside valid data.
-      patch[path]=Object.fromEntries(Object.entries(value).filter(([id,saved])=>!SHARE_IDS.has(id)||matchesWork(saved,autoShare[id]?.assign)));
-    }else{
-      patch[path]=path==='placements'&&value?Object.fromEntries(Object.entries(value).map(([id,p])=>[id,stamped(p)])):path.startsWith('placements/')&&value?stamped(value):value;
-    }
+    patch[path]=path.startsWith('placements/')&&value?stamped(value):value;
   }
   if(!Object.keys(patch).length){state.undo=null;$('save-status').textContent='割当が変わったため取り消せません';render();return;}
   sendPatch('直前操作を取り消し',patch,null,{undo:true});
 };
-$('erase').onclick=()=>ask('全消去しますか？','共有中の配置・作業状態・配置指示を全消去します。操作履歴は7日間保持します。全端末に反映されます。',()=>{
-  if(!ready||pendingWrites){$('save-status').textContent='読み込み・送信完了後に操作してください';return;}
+function eraseBlockReason(){
+  return eraseSending?'全消去を送信中…':!connected?'切断中は全消去できません':!ready||!root?'同期の準備中です':pendingWrites?'送信完了までお待ちください':'';
+}
+function renderErase(){
+  const reason=eraseBlockReason(),status=$('erase-status');$('erase').disabled=!!reason||!adminInSession||!adminPassword;if(status.textContent!==reason)status.textContent=reason;
+}
+let eraseSending=false;
+$('erase').onclick=()=>{if(!adminInSession||!adminPassword||eraseBlockReason())return;ask('全消去しますか？','共有中の配置・作業状態・配置指示を全消去します。操作履歴は7日間保持します。全端末に反映されます。元に戻せません。配置指示はExcelから再送信できます。',()=>{
+  if(!adminInSession||!adminPassword||eraseBlockReason()){renderErase();return;}
   // 履歴は期限内の削除を禁止。消去操作も追記で記録する。
   const key=push(ref(db,'s/'+accessKey+'/history')).key;
-  const before={placements:clone(state.placements),work:clone(state.work),plans:clone(state.plans)};
-  const target=root,gen=generation;const started=performance.now();pendingWrites++;state.undo=before;render();
-  $('save-status').textContent='全消去を送信中…';
-  update(target,{placements:null,work:null,plans:null,['history/'+key]:{at:serverTimestamp(),label:'全消去',byName:deviceName}}).then(()=>{if(gen===generation)$('save-status').textContent='送信完了 '+((performance.now()-started)/1000).toFixed(1)+'秒';}).catch(e=>{if(gen===generation){state.undo=null;permissionError(e);}}).finally(()=>{pendingWrites--;render();});
-});
-document.addEventListener('click',e=>{const close=e.target.closest('[data-close]');if(close)$(close.dataset.close).close();const tab=e.target.closest('[data-tab]');if(tab){active=tab.dataset.tab;render();}const work=e.target.closest('[data-work]');if(work&&!work.disabled&&!overview){const id=work.dataset.work,p=autoShare[id];if(p?.assign)commit(locationName(id)+' 作業状態を変更',()=>{state.work[id]={state:(workValue(id)+1)%3,assign:p.assign};});}const b=e.target.closest('[data-slot]');if(b&&!longPressed){shown(b.dataset.slot)?showDetail(b.dataset.slot):openEditor(b.dataset.slot);}longPressed=false;});
+  const target=root,gen=generation,adminGen=adminGeneration;const started=performance.now();eraseSending=true;pendingWrites++;$('admin-error').textContent='';$('save-status').textContent='全消去を送信中…';render();
+  update(target,{placements:null,work:null,plans:null,['adm/'+adminPassword+'/set']:serverTimestamp(),['history/'+key]:{at:serverTimestamp(),label:'全消去',byName:deviceName}}).then(()=>{if(gen===generation){state.undo=null;$('save-status').textContent='送信完了 '+((performance.now()-started)/1000).toFixed(1)+'秒';if(adminGen===adminGeneration)$('admin-error').textContent='全消去しました';}}).catch(e=>{if(gen===generation){const message='全消去できません：'+(isPermissionDenied(e)?'管理者権限を確認してください':(e.code||e.message));$('save-status').textContent=message;if(adminGen===adminGeneration)$('admin-error').textContent=message;}}).finally(()=>{eraseSending=false;pendingWrites--;render();});
+});};
+document.addEventListener('click',e=>{const close=e.target.closest('[data-close]');if(close)$(close.dataset.close).close();const tab=e.target.closest('[data-tab]');if(tab){active=tab.dataset.tab;render();}const work=e.target.closest('[data-work]');if(work&&!work.disabled&&!overview){const id=work.dataset.work,p=autoShare[id];if(p?.assign)commit(locationName(id)+' 作業状態を変更',()=>{state.work[id]={state:(workValue(id)+1)%3,assign:p.assign};});}const b=e.target.closest('[data-slot]');if(b&&!b.disabled&&!longPressed){const id=b.dataset.slot;if(shown(id))showDetail(id);else if(!SHARE_IDS.has(id)){if(overview)showEmptyHint(id);else openEditor(id);}}longPressed=false;});
 let timer=null,longPressed=false;
 document.addEventListener('pointerdown',e=>{const b=e.target.closest('[data-slot]');if(b&&shown(b.dataset.slot))timer=setTimeout(()=>{longPressed=true;showDetail(b.dataset.slot);},600);});
 for(const type of ['pointerup','pointercancel','pointermove'])document.addEventListener(type,()=>clearTimeout(timer));
@@ -502,7 +537,8 @@ setNameDays(null);render();if(accessKey&&deviceName)connect();else gate();
 <style>
 *{box-sizing:border-box}body{margin:0;background:#eef2f5;color:#182733;font:14px 'Yu Gothic UI','Meiryo',sans-serif}button,input,select{font:inherit}button,select{cursor:pointer;min-height:44px;border:1px solid #b7c2cc;border-radius:5px;background:#fff;color:#182733;padding:7px 12px}button:hover{filter:brightness(.96)}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #182733;outline-offset:2px}button:disabled{opacity:.45;cursor:default}header{padding:17px 22px 12px;background:#fff;border-bottom:1px solid #c5cdd5}h1{font-size:23px;margin:0 0 7px}.eyebrow{font-size:12px;font-weight:bold;letter-spacing:.12em;color:#526878}.topline,.tools,.legend{display:flex;align-items:center;flex-wrap:wrap;gap:10px}.topline{justify-content:space-between}.notice{font-weight:bold;color:#6c4a12;background:#fff3cd;padding:8px 12px;border-radius:4px;margin:10px 0}.tools{font-size:13px}.stamp{font-weight:bold}.legend{margin-top:10px;font-size:12px;gap:7px 15px}.tag{display:inline-flex;background:var(--unknown);color:#fff;border-radius:3px;padding:1px 5px;font-size:16px;line-height:1.6;font-weight:800;flex-shrink:0}.tag.today{background:var(--today)}.tag.tomorrow{background:var(--tomorrow)}.redsample{display:inline-block;width:5px;height:20px;background:var(--danger);vertical-align:middle}.muted{color:#60707e}.danger{color:var(--danger);font-weight:bold}main{padding:14px 18px}.map{display:grid;grid-template-columns:minmax(410px,1.24fr) minmax(330px,1fr) minmax(280px,.85fr);gap:14px;max-width:1760px;margin:auto;align-items:start}.column{display:grid;gap:12px}.area{background:var(--ground);border:1px solid #c1ccd4;border-radius:6px;overflow:hidden}.area h2{margin:0;background:var(--head);color:white;font-size:15px;padding:8px 10px;display:flex;justify-content:space-between;gap:8px}.area h2 small{font-size:11px;align-self:center}.content{padding:8px}.wait-head,.wait-row{display:grid;grid-template-columns:64px minmax(0,1fr) 28px minmax(0,1fr) 64px;gap:4px;align-items:stretch}.wait-head{text-align:center;font-size:11px;margin-bottom:5px}.wait-row{margin-bottom:5px}.lane-no{align-self:center;text-align:center;font-weight:bold}.instruction{background:#F3E8FF;color:#6330ac;font-size:10px;display:flex;align-items:center;justify-content:center;border:1px solid #dfc9f5;border-radius:3px;overflow-wrap:anywhere;padding:3px}.inst-title{color:#7C3AED;font-weight:bold}.slot{min-width:0}.tile{display:block;position:relative;text-align:left;width:100%;border:1px solid #aebec8;border-radius:3px;min-height:67px;padding:6px 7px;background:#ffffffd9;overflow:hidden}.tile.unknown{background:#e5e7eb;color:#59636f}.tile.soon{border-left:5px solid var(--danger);padding-left:3px}.tile.collision{outline:2px solid var(--danger);outline-offset:-2px}.tile .number{font-size:25px;font-weight:800;letter-spacing:.03em;line-height:1.12;font-variant-numeric:tabular-nums}.identity{display:flex;gap:5px;align-items:center;padding-right:8px}.sub{font-size:10px;display:block;line-height:1.45;margin-top:3px}.warn{font-size:10px;display:block;color:var(--danger);font-weight:bold}.equip{position:absolute;right:3px;top:2px;font-size:10px;font-weight:bold}.empty{color:#6b7c87;font-size:12px;display:flex;align-items:center;justify-content:center;gap:5px}.place-label{font-size:10px;display:block;color:#53616c;margin-bottom:2px}.dep-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.dep-col{display:grid;gap:5px}.dep-cell{display:grid;grid-template-columns:23px minmax(0,1fr);gap:3px}.mini-two{display:grid;grid-template-columns:1fr 1fr;gap:12px}.simple-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.fuel .simple-grid,.wash .simple-grid{grid-template-columns:1fr}.landmark{padding:17px;background:#dde1e5;border:1px dashed #8795a0;color:#57616a;text-align:center;font-weight:bold;font-size:14px}.vertical{grid-column:1/-1}.vertical .simple-grid{grid-template-columns:repeat(8,minmax(0,1fr))}.work-state{width:100%;min-height:36px;border-radius:0 0 3px 3px;font-size:11px;padding:4px}.work-state[data-state="1"]{background:#fff3cd}.work-state[data-state="2"]{background:#d9f4df}.tabs{display:none}footer{max-width:1760px;margin:12px auto 0}.history{background:#fff;padding:10px;border:1px solid #ccd5db;border-radius:5px}summary{cursor:pointer;font-weight:bold;min-height:28px}.history ol{margin:5px 0;padding-left:24px;font-size:12px}.help{font-size:12px;margin:8px 0;color:#52616e}dialog{border:0;border-radius:10px;box-shadow:0 15px 70px #0005;padding:20px;width:min(510px,calc(100% - 24px));max-height:92dvh;overflow:auto;color:#182733}dialog::backdrop{background:#17253099}dialog h2{margin:0 0 10px;font-size:21px}.dialog-top{display:flex;justify-content:space-between;align-items:start;gap:8px}.close{min-width:44px;padding:5px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.primary{background:#183e56;color:#fff;border-color:#183e56}.number-input{width:100%;font-size:38px;text-align:center;letter-spacing:.16em;font-weight:bold;border:2px solid #8a9ca9;border-radius:5px;min-height:65px;margin:8px 0}.keys{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.keys button{min-height:56px;font-size:24px;background:#f0f4f7}.candidate{width:100%;text-align:left;margin:6px 0;padding:12px;line-height:1.7}.candidate strong{display:block;font-size:17px}.detail-grid{display:grid;grid-template-columns:100px 1fr;gap:9px;font-size:14px}.detail-grid dt{color:#60707e}.detail-grid dd{margin:0;font-weight:bold;overflow-wrap:anywhere}#save-status{font-size:12px}#input-error{min-height:20px}.full{width:100%}
 @media(min-width:601px) and (max-width:1080px){.map{grid-template-columns:minmax(380px,1.2fr) minmax(290px,1fr)}.right{grid-column:1/-1;grid-template-columns:repeat(2,1fr)}.vertical .simple-grid{grid-template-columns:repeat(4,1fr)}}
-@media(max-width:600px){header{padding:12px}h1{font-size:20px}.eyebrow{font-size:10px}.notice{font-size:12px}.tools{gap:7px}.tools button{padding:6px 9px;font-size:12px}.legend{font-size:11px;gap:5px 10px}main{padding:9px 10px}body:not(.overview) .map,body:not(.overview) .column,body:not(.overview) .mini-two{display:block}body:not(.overview) .area{display:none}body:not(.overview) .area.active{display:block}body:not(.overview) .landmark{display:none}body:not(.overview) .tabs{display:flex;overflow-x:auto;gap:6px;padding:5px 0 10px;position:sticky;top:0;background:#eef2f5;z-index:2}body:not(.overview) .tabs button{white-space:nowrap;flex-shrink:0;min-height:44px;border-bottom:4px solid var(--tab)}body:not(.overview) .tabs button[aria-selected="true"]{background:var(--tab);color:#fff}body:not(.overview) .wait-head{display:none}body:not(.overview) .wait-row{display:flex;flex-direction:column;gap:7px;margin:0 0 7px}body:not(.overview) .wait-row .lane-no{display:none}body:not(.overview) .wait-row .instruction{display:none}body:not(.overview) .wait-row .slot{display:block}body:not(.overview) .slot .place-label{font-size:12px}body:not(.overview) .wait-row .place-label::after{content:'　指示 ' attr(data-plan);color:#7C3AED;font-size:11px}body:not(.overview) .tile{min-height:91px;padding:10px 13px}body:not(.overview) .tile .number{font-size:34px}body:not(.overview) .tag{font-size:20px}body:not(.overview) .sub{font-size:13px}body:not(.overview) .warn{font-size:12px}body:not(.overview) .equip{right:9px;top:6px;font-size:12px}body:not(.overview) .dep-grid,body:not(.overview) .dep-col,body:not(.overview) .simple-grid,body:not(.overview) .vertical .simple-grid,body:not(.overview) .fuel .simple-grid,body:not(.overview) .wash .simple-grid{display:block}body:not(.overview) .dep-cell{display:block;margin-bottom:9px}body:not(.overview) .dep-cell>.lane-no{display:none}body:not(.overview) .simple-grid>.slot{margin-bottom:10px}body:not(.overview) .content{padding:10px}body:not(.overview) .work-state{font-size:14px;min-height:44px}body:not(.overview) .area h2{font-size:17px}.detail-grid{grid-template-columns:82px 1fr}.keys button{min-height:58px}.actions button{min-height:48px}body:not(.overview) .empty{font-size:15px}.help{line-height:1.7}}
+@media(max-width:600px){main{padding:9px 10px}}
+@media(max-width:600px),(pointer:coarse) and (max-height:600px){body:not(.overview) h1{font-size:16px;margin-bottom:3px}body:not(.overview) .eyebrow{font-size:9px}body:not(.overview) .notice{font-size:12px}body:not(.overview) .tools{gap:7px}body:not(.overview) .tools button{padding:6px 9px;font-size:12px}body:not(.overview) main{padding:9px 10px}body:not(.overview) .map,body:not(.overview) .column,body:not(.overview) .mini-two{display:block}body:not(.overview) .area{display:none}body:not(.overview) .area.active{display:block}body:not(.overview) .landmark{display:none}body:not(.overview) .tabs{display:flex;overflow-x:auto;gap:6px;padding:5px 0 10px;position:sticky;top:0;background:#eef2f5;z-index:2}body:not(.overview) .tabs button{white-space:nowrap;flex-shrink:0;min-height:44px;border-bottom:4px solid var(--tab)}body:not(.overview) .tabs button[aria-selected="true"]{background:var(--tab);color:#fff}body:not(.overview) .wait-head{display:none}body:not(.overview) .wait-row{display:flex;flex-direction:column;gap:7px;margin:0 0 7px}body:not(.overview) .wait-row .lane-no{display:none}body:not(.overview) .wait-row .instruction{display:none}body:not(.overview) .wait-row .slot{display:block}body:not(.overview) .slot .place-label{font-size:12px}body:not(.overview) .wait-row .place-label::after{content:'　指示 ' attr(data-plan);color:#7C3AED;font-size:11px}body:not(.overview) .tile{min-height:91px;padding:10px 13px}body:not(.overview) .tile .number{font-size:34px}body:not(.overview) .tag{font-size:20px}body:not(.overview) .sub{font-size:13px}body:not(.overview) .warn{font-size:12px}body:not(.overview) .equip{right:9px;top:6px;font-size:12px}body:not(.overview) .dep-grid,body:not(.overview) .dep-col,body:not(.overview) .simple-grid,body:not(.overview) .vertical .simple-grid,body:not(.overview) .fuel .simple-grid,body:not(.overview) .wash .simple-grid{display:block}body:not(.overview) .dep-cell{display:block;margin-bottom:9px}body:not(.overview) .dep-cell>.lane-no{display:none}body:not(.overview) .simple-grid>.slot{margin-bottom:10px}body:not(.overview) .content{padding:10px}body:not(.overview) .work-state{font-size:14px;min-height:44px}body:not(.overview) .area h2{font-size:17px}.detail-grid{grid-template-columns:82px 1fr}.keys button{min-height:58px}.actions button{min-height:48px}body:not(.overview) .empty{font-size:15px}.help{line-height:1.7}}
 
 /* Web試作2: 実物の向き。既存の操作・意味色は共通のまま。 */
 .map{grid-template-columns:minmax(140px,.44fr) minmax(410px,1.36fr) minmax(380px,1.24fr) minmax(280px,.96fr);gap:12px}
@@ -543,9 +579,9 @@ setNameDays(null);render();if(accessKey&&deviceName)connect();else gate();
 .map{grid-template-columns:140px minmax(0,1fr)}.middle{grid-column:2}.right{grid-column:1 / -1}
 .wait-head,.wait-row{grid-template-columns:46px minmax(0,1fr) 24px minmax(0,1fr) 46px}
 }
-@media(max-width:600px){body:not(.overview) .map{display:block}body:not(.overview) .vertical .simple-grid{display:block}body:not(.overview) .dep-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(8,110px);gap:5px 0}body:not(.overview) .layout-left{grid-template-columns:41px minmax(0,1fr) 16px;gap:2px}body:not(.overview) .layout-right{grid-template-columns:16px minmax(0,1fr) 41px;gap:2px}body:not(.overview) .layout-left .number,body:not(.overview) .layout-right .number{font-size:24px}body:not(.overview) .layout-left .tag,body:not(.overview) .layout-right .tag{font-size:15px;padding:1px 3px}body:not(.overview) .layout-left .tile,body:not(.overview) .layout-right .tile{padding:5px 3px}body:not(.overview) .layout-left .empty,body:not(.overview) .layout-right .empty{font-size:12px;white-space:normal}body:not(.overview) .flight-info{font-size:10px}body:not(.overview) .lane-number{font-size:14px}body:not(.overview) .sub-layout{gap:14px 6px}body:not(.overview) .layout-sub-row{grid-template-rows:96px minmax(32px,auto)}body:not(.overview) .layout-sub-row .number,body:not(.overview) .layout-sub-tail .number{font-size:25px}body:not(.overview) .layout-sub-row .tag,body:not(.overview) .layout-sub-tail .tag{font-size:16px}body:not(.overview) .layout-sub-row .empty,body:not(.overview) .layout-sub-tail .empty{font-size:12px}body:not(.overview) .layout-sub-tail,body:not(.overview) .layout-sub-tail>.tile{height:96px}body:not(.overview) .right{display:block}
+@media(max-width:600px),(pointer:coarse) and (max-height:600px){body:not(.overview) .map{display:block}body:not(.overview) .vertical .simple-grid{display:block}body:not(.overview) .dep-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(8,110px);gap:5px 0}body:not(.overview) .layout-left{grid-template-columns:60px minmax(0,1fr) 18px;gap:2px}body:not(.overview) .layout-right{grid-template-columns:18px minmax(0,1fr) 60px;gap:2px}body:not(.overview) .layout-left .number,body:not(.overview) .layout-right .number{font-size:21px}body:not(.overview) .layout-left .tag,body:not(.overview) .layout-right .tag{font-size:13px;padding:1px 3px}body:not(.overview) .layout-left .tile,body:not(.overview) .layout-right .tile{padding:5px 3px}body:not(.overview) .layout-left .empty,body:not(.overview) .layout-right .empty{font-size:12px;white-space:normal}body:not(.overview) .flight-info{font-size:12px}body:not(.overview) .lane-number{font-size:16px}body:not(.overview) .layout-sub-tail{grid-template-columns:minmax(0,1fr) 60px}body:not(.overview) .layout-left .tile,body:not(.overview) .layout-right .tile{min-height:0}body:not(.overview) .sub-layout{gap:14px 6px}body:not(.overview) .layout-sub-row{grid-template-rows:96px minmax(32px,auto)}body:not(.overview) .layout-sub-row .number,body:not(.overview) .layout-sub-tail .number{font-size:25px}body:not(.overview) .layout-sub-row .tag,body:not(.overview) .layout-sub-tail .tag{font-size:16px}body:not(.overview) .layout-sub-row .empty,body:not(.overview) .layout-sub-tail .empty{font-size:12px}body:not(.overview) .layout-sub-tail,body:not(.overview) .layout-sub-tail>.tile{height:96px}body:not(.overview) .right{display:block}
 }
-@media(max-width:350px){body:not(.overview) .layout-left,body:not(.overview) .layout-right{grid-template-columns:14px minmax(0,1fr)}body:not(.overview) .layout-left>.tile,body:not(.overview) .layout-right>.tile{grid-column:2}body:not(.overview) .layout-left>.lane-number,body:not(.overview) .layout-right>.lane-number{grid-column:1}body:not(.overview) .layout-left>.flight-info,body:not(.overview) .layout-right>.flight-info{grid-column:2;grid-row:2}body:not(.overview) .dep-grid{grid-template-rows:repeat(8,140px)}body:not(.overview) .sub-layout{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 4px}body:not(.overview) .layout-sub-row .number,body:not(.overview) .layout-sub-tail .number{font-size:21px}body:not(.overview) .layout-sub-row .tag,body:not(.overview) .layout-sub-tail .tag{font-size:13px}
+@media(max-width:350px){body:not(.overview) .layout-left,body:not(.overview) .layout-right{grid-template-columns:14px minmax(0,1fr)}body:not(.overview) .layout-left>.tile,body:not(.overview) .layout-right>.tile{grid-column:2}body:not(.overview) .layout-left>.lane-number,body:not(.overview) .layout-right>.lane-number{grid-column:1}body:not(.overview) .layout-left>.flight-info,body:not(.overview) .layout-right>.flight-info{grid-column:2;grid-row:2}body:not(.overview) .dep-grid{grid-template-rows:repeat(8,140px)}body:not(.overview) .sub-layout{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 4px}body:not(.overview) .layout-sub-row .number,body:not(.overview) .layout-sub-tail .number{font-size:21px}body:not(.overview) .layout-sub-row .tag,body:not(.overview) .layout-sub-tail .tag{font-size:13px}body:not(.overview) .flight-info{font-size:10px}body:not(.overview) .lane-number{font-size:14px}body:not(.overview) .layout-left .number,body:not(.overview) .layout-right .number{font-size:24px}body:not(.overview) .layout-left .tag,body:not(.overview) .layout-right .tag{font-size:15px}body:not(.overview) .layout-left .tile,body:not(.overview) .layout-right .tile{min-height:91px}body:not(.overview) .layout-sub-tail{grid-template-columns:minmax(0,1fr) 58px}
 }
 
 /* 全体図は地図だけをPC相当の固定幅で描画。UIと標準ピンチズームは縮小しない。 */
@@ -565,7 +601,15 @@ body:not(.overview) .overview-help{display:none}
 .overview .work-state{opacity:1;cursor:default}
 .overview .empty{display:none}
 .overview .area{display:block}
-.overview .tile:empty{cursor:default}
+#readonly-band{position:sticky;top:0;z-index:5;background:#26333f;color:#fff;text-align:center;padding:6px;font-weight:bold}
+body.overview{background:#323941}.overview footer>.help{color:#e2e8f0}
+.legend{margin-top:5px;gap:2px 7px}.legend span{white-space:nowrap}.legend .tag,body:not(.overview) .legend .tag{font-size:11px;line-height:1.2;padding:1px 3px}.legend .redsample{height:12px}
+@media(max-width:600px),(pointer:coarse) and (max-height:600px){
+ body:not(.overview) header{padding:8px 12px}body:not(.overview) header .notice{margin:6px 0;padding:5px 8px}
+ body:not(.overview) .heading{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:baseline;gap:2px 6px}body:not(.overview) .heading .topline{display:contents}body:not(.overview) .heading h1{font-size:14px;margin:0;white-space:nowrap}body:not(.overview) .heading .eyebrow{font-size:11px;letter-spacing:0;white-space:nowrap}body:not(.overview) .title-extra{display:none}body:not(.overview) #data-stamp{grid-column:1/-1;font-size:11px}#data-stamp:empty{display:none}
+ body:not(.overview) .view-switch{margin:6px 0;gap:4px;flex-wrap:nowrap}body:not(.overview) .view-switch button{font-size:12px;padding:4px 6px;white-space:nowrap}body:not(.overview) .view-switch #undo{font-size:11px}body:not(.overview) header>.tools{gap:6px;flex-wrap:nowrap;font-size:12px}body:not(.overview) #device-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}body:not(.overview) #save-status{min-width:0;overflow-wrap:anywhere}
+ body:not(.overview) .legend{font-size:10px;gap:2px 5px}
+}
 #data-warning{background:#e2e5e9;color:#182733;border:2px solid #52616e;padding:12px 16px;margin:12px 0;font-size:16px;font-weight:800}
 .device-session{margin:28px 0 4px}#logout{font-size:11px;color:#60707e;background:transparent;border-color:transparent;text-decoration:underline;padding:4px;max-width:100%;text-align:left}
 .overview header{padding:8px 12px}.overview .topline{font-size:12px}.overview .view-switch{margin:6px 0;gap:6px}.overview #connection{font-size:12px;margin:6px 0;padding:5px 8px}.overview #data-warning{font-size:13px;margin:6px 0;padding:6px 8px}.overview main{padding-top:7px}
@@ -574,13 +618,14 @@ body:not(.overview) .overview-help{display:none}
 </style>
 </head>
 <body>
+<div id="readonly-band" hidden>閲覧専用（全体図）</div>
 <header>
-<div class="eyebrow">広島空港店 / PARKING OPERATIONS</div>
-<div class="topline"><h1>出発準備ダッシュボード｜同期試作</h1><span class="stamp" id="data-stamp"></span></div><div id="data-warning" role="alert" hidden></div>
-<div class="notice">送信完了前はこのページを閉じないでください。</div>
-<nav class="view-switch" aria-label="表示切替"><button id="view-overview" aria-pressed="false">全体図</button><button id="view-areas" aria-pressed="true">エリア別</button><p class="overview-help">閲覧専用：ピンチで拡大・指で移動。入力はエリア別表示で行います</p></nav>
-<div class="tools"><button id="undo">直前操作を元に戻す</button><button id="erase">全消去</button><button id="rename">スタッフ名を変更</button><b id="device-label"></b><span id="save-status" role="status"></span></div>
-<div class="notice" id="connection" role="status">切断中（再接続待ち・入力は後で送信）</div><p id="last-received" role="status">最終受信：まだありません</p><details><summary>同期の実測</summary><p class="help">他端末の配置更新のサーバー確定時刻から受信まで（推定）。初回一覧は除外。クリアは時刻情報が消えるため計測対象外。負値は時刻推定の誤差です。</p><ol id="measurements"><li>まだありません</li></ol></details><div class="legend"><span><b class="tag today">今</b> 今日出発</span><span><b class="tag tomorrow">明</b> 明日出発</span><span><i class="redsample"></i> 1時間以内</span><span>灰色＝予定未確認</span><span>◆＝装備あり</span><span class="danger">赤文字＝取り違え注意・要選択</span><span>≠＝配置指示と異なる</span></div>
+<div class="heading"><div class="eyebrow">広島空港店<span class="title-extra"> / PARKING OPERATIONS</span></div>
+<div class="topline"><h1>出発準備ダッシュボード<span class="title-extra">｜同期試作</span></h1><span class="stamp" id="data-stamp"></span></div></div><div id="data-warning" role="alert" hidden></div>
+<div class="notice" id="pending-send" role="status" hidden>送信完了前はこのページを閉じないでください。</div>
+<nav class="view-switch" aria-label="表示切替"><button id="view-overview" aria-pressed="false">全体図</button><button id="view-areas" aria-pressed="true">エリア別</button><p class="overview-help">閲覧専用：ピンチで拡大・指で移動。入力はエリア別表示で行います</p><button id="admin-session-open" type="button">管理者</button></nav>
+<div class="tools"><button id="undo">直前操作を元に戻す</button><b id="device-label"></b><span id="save-status" role="status"></span></div>
+<div class="notice" id="connection" role="status">切断中（再接続待ち・入力は後で送信）</div><details><summary>同期の実測</summary><p id="last-received" role="status">最終受信：まだありません</p><p class="help">他端末の配置更新のサーバー確定時刻から受信まで（推定）。初回一覧は除外。クリアは時刻情報が消えるため計測対象外。負値は時刻推定の誤差です。</p><ol id="measurements"><li>まだありません</li></ol></details><div class="legend"><span><b class="tag today">今</b> 今日出発</span><span><b class="tag tomorrow">明</b> 明日出発</span><span><i class="redsample"></i> 1時間以内</span><span>灰色＝予定未確認</span><span>◆＝装備あり</span><span class="danger">赤文字＝取り違え注意・要選択</span><span>≠＝配置指示と異なる</span></div>
 <details id="overview-extras" hidden><summary>その他の操作・説明</summary><div id="overview-extras-body"></div></details>
 </header>
 <main>
@@ -589,7 +634,8 @@ body:not(.overview) .overview-help{display:none}
 <div id="map-frame"><div class="map" id="map"></div></div>
 <footer><p class="help"><span class="area-help">空き枠を押す → 4桁入力。車両のある枠を押す → 詳細・変更・クリア。長押しでも詳細。</span><span class="overview-help">全体図は閲覧専用です。車両のある枠を押すと詳細を確認できます。入力はエリア別表示で行います。</span>配置指示はExcel側の読み取り表示です。出発予定は司令塔から受信したデータを表示します。</p><details class="history" open><summary>操作履歴（共有・直近20件）</summary><ol id="history"></ol></details><p class="device-session"><button id="logout" type="button">この端末からログアウト（店舗共通パスワードを忘れさせる）</button></p></footer>
 </main>
-<dialog id="editor" aria-labelledby="edit-title"><div class="dialog-top"><h2 id="edit-title">4桁入力</h2><button class="close" data-close="editor" aria-label="入力を閉じる">×</button></div><p id="edit-place" class="muted"></p><label for="digits">車番の下4桁（先頭の0も入力）</label><input id="digits" class="number-input" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" placeholder="0000"><div id="input-error" class="danger" role="alert"></div><div class="keys" id="keys"></div><div class="actions"><button id="submit" class="primary full">この4桁で確定</button></div></dialog>
+<dialog id="editor" aria-labelledby="edit-title"><div class="dialog-top"><h2 id="edit-title">4桁入力</h2><button class="close" data-close="editor" autofocus aria-label="入力を閉じる">×</button></div><p id="edit-place" class="muted"></p><label for="digits">車番の下4桁（先頭の0も入力）</label><input id="digits" class="number-input" inputmode="none" pattern="[0-9]{4}" maxlength="4" autocomplete="off" placeholder="0000"><div id="input-error" class="danger" role="alert"></div><div class="keys" id="keys"></div><div class="actions"><button id="submit" class="primary full">この4桁で確定</button></div></dialog>
+<dialog id="empty-hint" aria-labelledby="empty-hint-title"><div class="dialog-top"><h2 id="empty-hint-title">入力はエリア別で行います</h2><button class="close" data-close="empty-hint" aria-label="案内を閉じる">×</button></div><button id="open-slot-area" class="primary">このエリアを開く</button></dialog>
 <dialog id="picker" aria-labelledby="pick-title"><div class="dialog-top"><h2 id="pick-title">車両を選んでください</h2><button class="close" data-close="picker" aria-label="候補選択を閉じる">×</button></div><p>4桁が同じ車両が複数あります。フル車番を確認してください。</p><div id="candidates"></div><button id="unresolved" class="full">未選択のまま置く（要選択）</button></dialog>
 <dialog id="confirm" aria-labelledby="confirm-title"><h2 id="confirm-title"></h2><p id="confirm-text"></p><div class="actions"><button id="confirm-yes" class="primary">はい</button><button id="confirm-no">いいえ</button></div></dialog>
 <dialog id="detail" aria-labelledby="detail-title"><div class="dialog-top"><h2 id="detail-title">車両の詳細</h2><button class="close" data-close="detail" aria-label="詳細を閉じる">×</button></div><div id="detail-body"></div><p id="detail-readonly" class="help" hidden>入力はエリア別表示で行います</p><div class="actions"><button id="change" class="primary">4桁を入力・変更</button><button id="resolve">候補を選ぶ</button><button id="clear">この枠をクリア</button></div></dialog>
@@ -607,12 +653,12 @@ body:not(.overview) .overview-help{display:none}
 <div style="max-width:1100px;margin:4vh auto;background:white;padding:24px;border-radius:8px">
 <h2 id="admin-title">管理者画面</h2>
 <form id="admin-form" autocomplete="off" style="max-width:440px">
-<p><label>店舗共通パスワード<input id="admin-store" type="password" autocomplete="off" required style="display:block;width:100%;min-height:44px"></label></p>
+<p id="admin-store-row"><label>店舗共通パスワード<input id="admin-store" type="password" autocomplete="off" required style="display:block;width:100%;min-height:44px"></label></p>
 <p><label>管理者パスワード（半角8〜32文字）<input id="admin-password" type="password" minlength="8" maxlength="32" autocomplete="off" required style="display:block;width:100%;min-height:44px"></label></p>
 <button type="submit" class="primary">管理者として接続</button>
 </form>
 <p id="admin-error" class="danger" role="alert"></p>
-<div id="admin-panel" hidden><p>最終利用日時の新しい順／日本時間。期限を超えた登録と改名で解放した登録は再利用できます。</p>
+<div id="admin-panel" hidden><div id="admin-device-actions" class="tools" hidden><button id="rename" type="button">スタッフ名を変更</button><button id="erase" type="button" aria-describedby="erase-status" disabled>全消去</button><span id="erase-status" role="status"></span></div><p>最終利用日時の新しい順／日本時間。期限を超えた登録と改名で解放した登録は再利用できます。</p>
 <p id="admin-retention-help" class="help">スタッフ名の登録は30日使われないと解放され、利用中の端末が掃除します。操作履歴は7日を過ぎると、利用中の端末が削除します。配置中の車両には入力したスタッフ名が、その枠が空くまで残ります</p>
 <form id="name-days-form"><label>スタッフ名の保持日数（1〜365日）<input id="name-days" type="number" min="1" max="365" step="1" value="30" required></label> <button id="save-name-days" type="submit">保持日数を保存</button><span id="name-days-status" role="status"></span></form>
 <form id="stale-hours-form"><label>データの鮮度警告（1〜24時間）<input id="stale-hours" type="number" min="1" max="24" step="1" value="4" required></label> <button id="save-stale-hours" type="submit">警告時間を保存</button><span id="stale-hours-status" role="status"></span></form>
