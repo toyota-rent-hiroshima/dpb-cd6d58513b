@@ -90,6 +90,9 @@ function placeUndo(){
 }
 function applyViewport(){document.body.classList.toggle('wide-areas',!compactHeader.matches);placeUndo();}
 compactHeader.addEventListener('change',()=>{applyViewport();render();});
+const desktopType=matchMedia('(width > 600px) and (not (pointer:coarse))');
+const setDesktopType=()=>document.body.classList.toggle('desktop-type',desktopType.matches);
+desktopType.addEventListener('change',setDesktopType);setDesktopType();
 applyViewport();
 function fitOverview(){
   const map=$('map'),frame=$('map-frame');
@@ -731,11 +734,35 @@ body.overview{background:#323941}.overview footer>.help{color:#e2e8f0}
 :is(.overview,.wide-areas) #map .layout-sub-tail,:is(.overview,.wide-areas) #map .layout-sub-tail>.tile{height:auto;min-height:90px}
 :is(.overview,.wide-areas) #map .sub-layout .tile{padding:15px 2px 5px;container-type:inline-size}
 :is(.overview,.wide-areas) #map .sub-layout .tile.soon{padding-left:0}
-:is(.overview,.wide-areas) #map .sub-layout .tile .identity{gap:1px}
+:is(.overview,.wide-areas) #map .sub-layout .tile .identity{gap:2px}
 :is(.overview,.wide-areas) #map .sub-layout .tile .tag{padding-inline:1px}
-:is(.overview,.wide-areas) #map .sub-layout .tile .sub:not(.sub~.sub){white-space:nowrap;text-align:center}
 :is(.overview,.wide-areas) .collision-note{line-height:1.6}
 @container (width < 121px){:is(.overview,.wide-areas) #area-sub .collision-suffix{display:none}}
+/* 全体図の文字サイズは縮小前の地図座標で指定する。 */
+.overview,.desktop-type{--map-number:28px;--map-flight:13px;--map-small:12px}
+.desktop-type:not(.overview){--map-number:clamp(28px,calc(16px + .9375vw),34px);--map-flight:clamp(13px,calc(9px + .3125vw),15px);--map-small:clamp(12px,calc(8px + .3125vw),14px)}
+.overview #map{grid-template-columns:154px 425px 353px 432px}
+.desktop-type:not(.overview) #map{max-width:1884px}
+@media (min-width:1420px){.desktop-type:not(.overview) #map{grid-template-columns:minmax(154px,.42fr) minmax(410px,1.14fr) minmax(380px,1.16fr) minmax(405px,1.28fr)}}
+@media (600px < width < 1420px){.desktop-type:not(.overview) #map{grid-template-columns:154px minmax(410px,1fr) minmax(380px,1fr)}.desktop-type:not(.overview) .right{grid-column:2 / 4;grid-template-columns:repeat(2,minmax(0,1fr))}.desktop-type:not(.overview) .right .landmark{grid-column:1/-1}}
+@media (600px < width <= 1010px){.desktop-type:not(.overview) #map{grid-template-columns:154px minmax(0,1fr)}.desktop-type:not(.overview) .middle{grid-column:2}.desktop-type:not(.overview) .right{grid-column:1/-1}}
+:is(.overview,.desktop-type) #map :is(small,.place-label,.empty,.warn,.equip,.work-state,.lane-number){font-size:var(--map-small)}
+:is(.overview,.desktop-type) #map .tile::before{font-size:var(--map-small)}
+:is(.overview,.desktop-type) #map .tile .number{font-size:var(--map-number)}
+:is(.overview,.desktop-type) #map .tile .sub,:is(.overview,.desktop-type) #map .wait-plan-band{font-size:var(--map-flight)}
+:is(.overview,.desktop-type) #map .tile{min-height:0;padding:5px;border-left-width:1px;text-align:left}
+:is(.overview,.desktop-type) #map .tile.soon{box-shadow:inset 4px 0 var(--danger)}
+:is(.overview,.desktop-type) #map .tile .identity{justify-content:flex-start;gap:2px}
+:is(.overview,.desktop-type) #map .tile .tag{padding-inline:1px}
+:is(.overview,.desktop-type) #map .tile .sub{overflow-wrap:anywhere;text-align:left}
+:is(.overview,.desktop-type) #map .tile:not(:has(.identity)){min-height:44px}
+:is(.overview,.desktop-type) #map .layout-sub-row{grid-template-rows:minmax(44px,auto)}
+:is(.overview,.desktop-type) #map .layout-sub-tail,:is(.overview,.desktop-type) #map .layout-sub-tail>.tile{min-height:44px}
+:is(.overview,.desktop-type) #map .sub-layout .tile{padding:calc(var(--map-small) + 6px) 5px 5px}
+:is(.overview,.desktop-type) #map .dep-grid{grid-template-rows:repeat(8,minmax(88px,auto))}
+:is(.overview,.desktop-type) #map .dep-position>.slot>.tile{height:auto;min-height:100%}
+:is(.overview,.desktop-type) :is(.legend,.legend .tag,#logout){font-size:var(--map-small)}
+@container (width < 148px){:is(.overview,.desktop-type) #area-sub .collision-suffix{display:none}}
 </style>
 </head>
 <body>
