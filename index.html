@@ -85,10 +85,12 @@ let overview=prefGet('view')==='overview';
 const viewExtras=Array.from(document.querySelectorAll('header .heading > .eyebrow,header h1,header > .notice:not(#connection):not(#pending-send),.view-switch .overview-help,header > .tools,header > details:not(#overview-extras),header > .legend')).map(node=>{const marker=document.createComment('area-view-position');node.before(marker);return {node,marker};});
 const compactHeader=matchMedia('(max-width:600px), (pointer:coarse) and (max-height:600px)');
 function placeUndo(){
-  const undo=$('undo'),parent=!overview&&compactHeader.matches?$('admin-session-open').parentElement:$('device-label').parentElement;
+  const undo=$('undo'),parent=!overview?$('admin-session-open').parentElement:$('device-label').parentElement;
   if(undo.parentElement!==parent){if(parent.classList.contains('view-switch'))parent.append(undo);else parent.prepend(undo);}
 }
-compactHeader.addEventListener('change',placeUndo);
+function applyViewport(){document.body.classList.toggle('wide-areas',!compactHeader.matches);placeUndo();}
+compactHeader.addEventListener('change',()=>{applyViewport();render();});
+applyViewport();
 function fitOverview(){
   const map=$('map'),frame=$('map-frame');
   if(!overview){map.style.transform='';frame.style.height='';return;}
@@ -108,7 +110,13 @@ function setView(value){closeAll();clearTimeout(timer);overview=value;prefSet('v
 $('view-overview').onclick=()=>setView(true);
 $('view-areas').onclick=()=>setView(false);
 window.addEventListener('resize',fitOverview);
-new ResizeObserver(fitOverview).observe($('map-frame'));
+// fitOverview writes the observed frame's height; do not write during observer delivery.
+let overviewFitQueued=false;
+new ResizeObserver(()=>{
+  if(!overview||overviewFitQueued)return;
+  overviewFitQueued=true;
+  requestAnimationFrame(()=>{overviewFitQueued=false;fitOverview();});
+}).observe($('map-frame'));
 applyView();
 const validDeviceId=id=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id);
 let deviceId=prefGet('id')||crypto.randomUUID();if(validDeviceId(deviceId))prefSet('id',deviceId);
@@ -460,17 +468,26 @@ function workValue(id){
  const saved=state.work[id];
  return matchesWork(saved,autoShare[id]?.assign)?saved.state:0;
 }
-function tile(s){const p=shown(s.id),plan=state.plans[s.id]||'—',auto=s.area==='share';let inside=auto?'<span class="empty">自動表示</span>':overview?'':'<span class="empty">＋ 4桁入力</span>',cls='tile';if(p){const x=classify(p);cls+=' '+x.kind+(x.soon?' soon':'')+(collision(p)?' collision':'');inside='<span class="identity">'+(x.kind!=='unknown'?'<b class="tag '+x.kind+'">'+CONFIG[x.kind].label+'</b>':'')+'<strong class="number">'+esc(p.digits)+'</strong></span>'+(x.r?.equip?'<span class="equip" title="装備あり">◆</span>':'')+'<span class="sub">'+(x.r?esc(reservationLabel(x.r))+(x.r.review?' <small class="review">要確認</small>':'')+' · '+esc(x.r.time):(dataLoaded?'予定未確認':'データ読込中'))+(x.r&&state.plans[s.id]&&x.r.slot!==state.plans[s.id]?' <b title="配置指示と異なる">≠</b>':'')+'</span>'+(x.r&&x.r.status!=='予約'?'<span class="sub muted">出発済み？（'+esc(x.r.status)+'）</span>':'')+(p.flag==='unresolved'?'<span class="warn">要選択</span>':'')+(p.flag==='outside'?'<span class="sub">候補なし（保有外の可能性）</span>':'')+(x.v?.outside?'<span class="sub">保有外の候補</span>':'')+(collision(p)?'<span class="warn">取り違え注意：同じ4桁</span>':'');}
+function tile(s){const p=shown(s.id),plan=state.plans[s.id]||'—',auto=s.area==='share';let inside=auto?'<span class="empty">自動表示</span>':overview?'':'<span class="empty">＋ 4桁入力</span>',cls='tile';if(p){const x=classify(p);cls+=' '+x.kind+(x.soon?' soon':'')+(collision(p)?' collision':'');inside='<span class="identity">'+(x.kind!=='unknown'?'<b class="tag '+x.kind+'">'+CONFIG[x.kind].label+'</b>':'')+'<strong class="number">'+esc(p.digits)+'</strong></span>'+(x.r?.equip?'<span class="equip" title="装備あり">◆</span>':'')+'<span class="sub">'+(x.r?esc(reservationLabel(x.r))+(x.r.review?' <small class="review">要確認</small>':'')+' · '+esc(x.r.time):(dataLoaded?'予定未確認':'データ読込中'))+(x.r&&state.plans[s.id]&&x.r.slot!==state.plans[s.id]?' <b title="配置指示と異なる">≠</b>':'')+'</span>'+(x.r&&x.r.status!=='予約'?'<span class="sub muted">出発済み？（'+esc(x.r.status)+'）</span>':'')+(p.flag==='unresolved'?'<span class="warn">要選択</span>':'')+(p.flag==='outside'?'<span class="sub">候補なし（保有外の可能性）</span>':'')+(x.v?.outside?'<span class="sub">保有外の候補</span>':'')+(collision(p)?'<span class="warn collision-note" title="取り違え注意：同じ4桁">取り違え注意<span class="collision-suffix">：同じ4桁</span></span>':'');}
  const workDisabled=overview||!p?.assign||!ready;
  const band=s.area==='wait'?'<span class="wait-plan-band'+(state.plans[s.id]?'':' no-plan')+'">'+(state.plans[s.id]?'指示 '+esc(plan):'指示なし')+'</span>':'';
  return '<div class="slot"><span class="place-label" data-plan="'+esc(plan)+'">'+esc(locationName(s.id))+'</span>'+band+'<button class="'+cls+'" '+(auto&&!p?'disabled ':'')+'data-slot="'+s.id+'" aria-label="'+esc(locationName(s.id)+(p?' '+p.digits+' 詳細':auto?' 空き枠（自動表示）':overview?' 空き枠（閲覧専用）':' 4桁入力'))+'">'+inside+'</button>'+(auto?'<button class="work-state" '+(workDisabled?'disabled ':'')+'data-work="'+s.id+'" data-state="'+workValue(s.id)+'">'+CONFIG.work[workValue(s.id)]+(workDisabled?'':' ↻')+'</button>':'')+'</div>';}
 function section(area,body){const [name,bg,head]=CONFIG.areas[area];return '<section id="area-'+area+'" class="area '+area+(active===area?' active':'')+'" style="--ground:'+bg+';--head:'+head+'"><h2>'+name+'<small>'+SLOTS.filter(s=>s.area===area).length+'枠'+(area==='wait'?' / 指示32・閲覧のみ':'')+'</small></h2><div class="content">'+body+'</div></section>';}
 function spatialTile(s,mode){
-let html=tile(s),flight='<span class="flight-info">—</span>';
-html=html.replace(/<span class="sub">([\s\S]*?)<\/span>/,(whole,body)=>{flight='<span class="flight-info">'+body.replace(' · ','<br>')+'</span>';return mode.startsWith('sub')?'':whole.replace('class="sub"','class="sub mobile-flight"');});
+let html=tile(s),after;
+if(mode.startsWith('sub')){
+ after='';
+ if(!overview&&compactHeader.matches){
+  after='<span class="flight-info">—</span>';
+  html=html.replace(/<span class="sub">([\s\S]*?)<\/span>/,(_,body)=>{after='<span class="flight-info">'+body.replace(' · ','<br>')+'</span>';return '';});
+ }
+ html=html.replace('data-slot="','data-label="サブ'+s.label+'" data-slot="');
+}else{
+ if(!overview&&compactHeader.matches)html=html.replace('class="sub"','class="sub mobile-flight"');
+ after='<span class="lane-number">'+s.label+'</span>';
+}
 html=html.replace('class="slot"','class="slot layout-'+mode+'"');
-if(mode.startsWith('sub'))html=html.replace('data-slot="','data-label="サブ'+s.label+'" data-slot="');
-html=html.replace('</button>', '</button>'+flight+(mode==='left'||mode==='right'?'<span class="lane-number">'+s.label+'</span>':''));
+html=html.replace('</button>', '</button>'+after);
 return html;
 }
 function subArea(){const a=SLOTS.filter(s=>s.area==='sub');return section('sub','<div class="sub-layout">'+a.slice(0,8).map((s,i)=>'<div class="sub-position" style="grid-column:'+(i===0?2:i===1?3:(i-2)%3+1)+'">'+spatialTile(s,'sub-row')+'</div>').join('')+'<div class="sub-tail">'+a.slice(8).map(s=>spatialTile(s,'sub-tail')).join('')+'</div></div>');}
@@ -479,8 +496,8 @@ function render(){
  $('pending-send').hidden=pendingWrites===0;renderErase();
 renderDataStamp();placementGate();$('undo').disabled=overview||!state.undo||pendingWrites>0||!ready;
 $('tabs').innerHTML=Object.entries({vertical:CONFIG.areas.vertical,...CONFIG.areas}).map(([a,[n,,c]])=>'<button style="--tab:'+c+'" data-tab="'+a+'" aria-selected="'+(active===a)+'">'+n+'</button>').join('');
-const wait=SLOTS.filter(s=>s.area==='wait');let w='<div class="wait-head"><span class="inst-title">指示・左</span><span>待機・左</span><span>番号</span><span>待機・右</span><span class="inst-title">指示・右</span></div>';
-for(let i=0;i<32;i+=2){const left=esc(state.plans[wait[i].id]||'—'),right=esc(state.plans[wait[i+1].id]||'—'),n=wait[i].label.replace('左','');w+='<div class="wait-row"><div class="wait-mobile-heading">'+n+'</div><div class="instruction">'+left+'</div>'+tile(wait[i])+'<span class="lane-no">'+n+'</span>'+tile(wait[i+1])+'<div class="instruction">'+right+'</div></div>';}
+const wait=SLOTS.filter(s=>s.area==='wait');let w='';
+for(let i=0;i<32;i+=2){const n=wait[i].label.replace('左','');w+='<div class="wait-row"><div class="wait-mobile-heading">'+n+'</div>'+tile(wait[i])+tile(wait[i+1])+'</div>';}
 const dep=SLOTS.filter(s=>s.area==='depart');
 const departure=dep.map((s,i)=>{const left=i<7,row=left?i+1:i-6;return '<div class="dep-position" style="grid-column:'+(left?1:2)+';grid-row:'+row+(s.label==='①'?' / span 2':'')+'">'+spatialTile(s,left?'left':'right')+'</div>';}).join('');
 $('map').innerHTML='<div class="column far-left">'+simple('vertical')+'</div><div class="column left">'+section('wait',w)+'</div><div class="column middle">'+section('depart','<div class="dep-grid">'+departure+'</div>')+'<div class="mini-two">'+simple('fuel')+simple('wash')+'</div></div><div class="column right"><div class="landmark">レンタカー共同店舗<br><small>位置の目印・データなし</small></div>'+simple('roof')+subArea()+simple('share')+'</div>';
@@ -681,10 +698,48 @@ body.overview{background:#323941}.overview footer>.help{color:#e2e8f0}
  body:not(.overview) .wait-row .tile{grid-area:3/1;border-radius:0 0 3px 3px;padding-inline:5px}body:not(.overview) .wait-row .slot ~ .slot .tile{grid-column:2}body:not(.overview) .wait-row .identity{padding-right:0;gap:4px}body:not(.overview) .wait-row .tag{padding-inline:3px}
  body:not(.overview) :is(.dep-grid,.wait-row) .tile .number{font-size:34px;letter-spacing:0}body:not(.overview) :is(.dep-grid,.wait-row) .tile .tag{font-size:18px;padding:1px 3px}body:not(.overview) :is(.dep-grid,.wait-row) .tile .sub{font-size:13px}
 }
+/* PC・全体図は枠の配置を保ち、車番と補助情報を枠内に統一する。 */
+.wide-areas:not(.overview) header{padding:9px 18px}.wide-areas:not(.overview) .heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 10px}.wide-areas:not(.overview) .heading .topline{align-items:baseline}.wide-areas:not(.overview) .heading h1{font-size:18px;margin:0}.wide-areas:not(.overview) .heading .title-extra{display:none}.wide-areas:not(.overview) .view-switch{margin:6px 0}.wide-areas:not(.overview) .legend{gap:2px 10px}
+.overview #map{grid-template-columns:140px 450px 378px 396px}
+.overview #area-vertical .content{padding-inline:4px}
+:is(.overview,.wide-areas) .layout-left{grid-template-columns:minmax(0,1fr) 20px}
+:is(.overview,.wide-areas) .layout-right{grid-template-columns:20px minmax(0,1fr)}
+:is(.overview,.wide-areas) .layout-left>.tile{grid-column:1}
+:is(.overview,.wide-areas) .layout-left>.lane-number{grid-column:2}
+:is(.overview,.wide-areas) .wait-row .place-label{display:none}
+:is(.overview,.wide-areas) .dep-grid .tile>.sub:not(.sub~.sub){text-align:center}
+:is(.overview,.wide-areas) .wait-row{grid-template-columns:repeat(2,minmax(0,1fr));gap:0 4px}
+:is(.overview,.wide-areas) .wait-mobile-heading{display:block;grid-column:1/-1;font-weight:bold;margin-bottom:3px}
+:is(.overview,.wide-areas) .wait-row .slot{display:contents}
+:is(.overview,.wide-areas) .wait-plan-band{display:block;grid-row:2;grid-column:1;min-width:0;padding:3px 2px;border:1px solid #aebec8;border-bottom:0;border-radius:3px 3px 0 0;background:#F3E8FF;color:#6330ac;font-size:9.5px;line-height:1.4;white-space:pre-wrap;overflow-wrap:anywhere;text-align:left}
+:is(.overview,.wide-areas) .wait-row .slot ~ .slot .wait-plan-band{grid-column:2;text-align:right}
+:is(.overview,.wide-areas) .wait-plan-band.no-plan{background:#eef2f5;color:#52606d}
+:is(.overview,.wide-areas) .wait-row .tile{grid-row:3;grid-column:1;border-radius:0 0 3px 3px}
+:is(.overview,.wide-areas) .wait-row .slot ~ .slot .tile{grid-column:2}
+:is(.overview,.wide-areas) #map .tile{min-height:76px;padding:6px 5px}
+:is(.overview,.wide-areas) #map .tile.soon{padding-left:2px}
+:is(.overview,.wide-areas) #map .tile .identity{padding:0;gap:3px}
+:is(.overview,.wide-areas) #map .tile .number{font-size:28px;letter-spacing:0}
+:is(.overview,.wide-areas) #map .tile .tag{font-size:16px;padding:1px 3px}
+:is(.overview,.wide-areas) #map .sub,:is(.overview,.wide-areas) #map .flight-info{font-size:12px}
+:is(.overview,.wide-areas) #map .tile .equip{top:2px;right:3px}
+:is(.overview,.wide-areas) #area-sub .content{padding-inline:2px}
+:is(.overview,.wide-areas) #map .sub-layout{grid-template-columns:repeat(3,minmax(0,1fr));column-gap:3px}
+:is(.overview,.wide-areas) #map .sub-tail{grid-column:3}
+:is(.overview,.wide-areas) #map .layout-sub-row{grid-template-rows:minmax(86px,auto)}
+:is(.overview,.wide-areas) #map .layout-sub-tail{grid-template-columns:minmax(0,1fr)}
+:is(.overview,.wide-areas) #map .layout-sub-tail,:is(.overview,.wide-areas) #map .layout-sub-tail>.tile{height:auto;min-height:90px}
+:is(.overview,.wide-areas) #map .sub-layout .tile{padding:15px 2px 5px;container-type:inline-size}
+:is(.overview,.wide-areas) #map .sub-layout .tile.soon{padding-left:0}
+:is(.overview,.wide-areas) #map .sub-layout .tile .identity{gap:1px}
+:is(.overview,.wide-areas) #map .sub-layout .tile .tag{padding-inline:1px}
+:is(.overview,.wide-areas) #map .sub-layout .tile .sub:not(.sub~.sub){white-space:nowrap;text-align:center}
+:is(.overview,.wide-areas) .collision-note{line-height:1.6}
+@container (width < 121px){:is(.overview,.wide-areas) #area-sub .collision-suffix{display:none}}
 </style>
 </head>
 <body>
-<div id="readonly-band" hidden>閲覧専用（全体図）</div>
+<div id="readonly-band" hidden>閲覧専用（全体図）　車番・便名の確認は「エリア別」で</div>
 <header>
 <div class="heading"><div class="eyebrow">広島空港店<span class="title-extra"> / PARKING OPERATIONS</span></div>
 <div class="topline"><h1>出発準備ダッシュボード<span class="title-extra">｜同期試作</span></h1><span class="stamp" id="data-stamp"></span></div></div><div id="data-warning" role="alert" hidden></div>
